@@ -1334,8 +1334,8 @@ class SeatMonitorApp:
     def _apply_refresh_jitter(self, base_seconds):
         # 고정 간격 패턴을 줄이기 위해 구간별 지터를 적용
         if base_seconds == ZERO_MINUTE_REFRESH_SECONDS:
-            offset = random.randint(-1, 1)
-            return max(1, base_seconds + offset)
+            # 0분 남음 구간은 빠른 재시도가 필요하므로 고정 1초로 동작하도록 변경
+            return 1
 
         if base_seconds == ONE_MINUTE_REFRESH_SECONDS:
             offset = random.randint(-1, 1)
