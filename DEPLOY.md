@@ -1,5 +1,17 @@
 # Vercel + Supabase 배포
 
+## 현재 운영 배포
+
+- 운영 주소: https://library-seat-dusky.vercel.app
+- Vercel 프로젝트: `juyeop-shins-projects/library-seat`, GitHub `main` 자동 배포
+- Supabase 프로젝트: `library-seat` (`izdxeebrvneysoydsugg`, 서울)
+- 2026-10-07: 운영 웹앱 로그인, 상태 조회, 인증 없는 API 접근 차단을 확인했습니다.
+- Supabase Cron의 `30 seconds` 작업과 Vercel의 HTTP 200 응답, 저장된 실행 시각을 확인했습니다.
+- 도서관 계정 연결과 실제 좌석 예약은 아직 검증하지 않았습니다. 아래 4단계로 연결해야 합니다.
+
+이 PC의 접속 비밀번호는 Git에서 제외된 `data/webapp-access.txt`에 있습니다.
+이 파일과 `data/deployment-secrets.json`은 현재 Windows 사용자만 접근하도록 설정했습니다.
+
 ## 구조
 
 ```text
@@ -124,7 +136,7 @@ Safari에서 운영 주소를 열고 접속합니다. 공유 > 홈 화면에 추
 - 개인 계정 하나를 위한 배포입니다. 웹앱 비밀번호를 공유하면 같은 도서관 계정을 조작할 수 있습니다.
 - 30초마다 실행하면 하루 최대 2,880회, 30일 약 86,400회 호출됩니다. 대기가 없으면 도서관 조회는 줄이지만 Cron 호출은 유지됩니다.
 - 무료 제공량 안에서 동작하는지는 다른 프로젝트 사용량과 현재 요금제를 포함해 확인해야 합니다. 무료·무중단 운영을 보장하지 않습니다.
-- 로컬 단위 테스트와 가상 좌석 UI 검증을 제공합니다. 실제 Vercel/Supabase 배포 및 실제 도서관 예약 검증은 별도입니다.
+- 로컬 단위 테스트·가상 좌석 UI와 실제 Vercel/Supabase 배포·Cron 연결을 검증했습니다. 실제 도서관 계정 연결·예약 검증은 별도입니다.
 - 배포 후 데스크톱 GUI와 웹앱에서 같은 계정의 자동 예약을 동시에 실행하지 마세요.
 
 공식 참고: [Vercel Flask](https://vercel.com/docs/frameworks/backend/flask), [Supabase Cron](https://supabase.com/docs/guides/cron), [Vercel Cron 제한](https://vercel.com/docs/cron-jobs/usage-and-pricing)
