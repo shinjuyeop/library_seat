@@ -115,6 +115,13 @@ class WorkerTests(ServiceFixture):
                 normalize_reservation(payload)
         self.assertIsNone(normalize_reservation({'list': []}))
 
+    def test_explicit_provider_no_record_is_an_empty_reservation(self):
+        client = LibraryClient('test-token')
+        response = Mock(status_code=200)
+        response.json.return_value = {'success': True, 'code': 'success.noRecord', 'data': None}
+        client.session.request = Mock(return_value=response)
+        self.assertIsNone(client.reservation())
+
     def test_stale_cancel_cannot_return_newly_confirmed_seat(self):
         self.client.reserve(102003)
         self.client.current['state'] = 'CHARGE'
@@ -178,78 +185,238 @@ class ApiTests(ServiceFixture):
 
 
 class FakeCloudStore:
-    def __init__(self):
-        self.document = {}
-        self.owner = None
+    def __init__(self, accounts=None, account=None, locks=None):
+        self.accounts = {} if accounts is None else accounts
+        self.account = account
+        self.locks = {} if locks is None else locks
+
+    def for_account(self, account):
+        return FakeCloudStore(self.accounts, account, self.locks)
+
+    def ensure(self):
+        self.accounts.setdefault(self.account, {})
 
     def read(self):
-        return copy.deepcopy(self.document)
+        return copy.deepcopy(self.accounts[self.account])
 
     def claim(self, owner):
-        if self.owner:
+        if self.locks.get(self.account):
             return False
-        self.owner = owner
+        self.locks[self.account] = owner
         return True
 
     def save(self, owner, document):
-        if owner != self.owner:
+        if self.locks.get(self.account) != owner:
             raise LibraryError('lease lost')
-        self.document = copy.deepcopy(document)
+        self.accounts[self.account] = copy.deepcopy(document)
 
     def release(self, owner):
-        if self.owner == owner:
-            self.owner = None
+        if self.locks.get(self.account) == owner:
+            self.locks.pop(self.account)
+
+    def _request(self, *args, **kwargs):
+        return True  # Rate limiter permits these test calls.
 
 
 class CloudTests(unittest.TestCase):
     def setUp(self):
         self.store = FakeCloudStore()
         self.key = Fernet.generate_key()
-        self.cloud = CloudService(self.store, self.key)
-        self.client = DemoClient()
-        self.patch = patch('cloud_service.LibraryClient', return_value=self.client)
-        self.patch.start()
-        self.addCleanup(self.patch.stop)
+        self.root = CloudService(self.store, self.key)
+        self.clients = {'alice': DemoClient(), 'bob': DemoClient()}
+        client_patch = patch('cloud_service.LibraryClient', side_effect=lambda token, cookies=None: self.clients[token])
+        client_patch.start()
+        self.addCleanup(client_patch.stop)
+        login_patch = patch('cloud_service.login_to_library', side_effect=lambda username, password: {'token': username, 'cookies': {'session': 'test-cookie'}, 'identity': username})
+        self.authenticate = login_patch.start()
+        self.addCleanup(login_patch.stop)
+
+    def login(self, username='alice', remember=True):
+        account = self.root.login(username, 'valid-password', remember=remember)
+        return self.root.for_account(account)
 
     def test_encrypted_login_and_state_survive_new_instance(self):
-        self.cloud.connect_token('test-library-token', {'session':'test-cookie'})
-        self.assertNotIn('test-library-token', json.dumps(self.store.document))
-        self.assertNotIn('test-cookie', json.dumps(self.store.document))
-        self.cloud.set_wait(['102:3'], True)
-        other = CloudService(self.store, self.key)
+        cloud = self.login()
+        raw = json.dumps(cloud.store.read())
+        self.assertNotIn('valid-password', raw)
+        self.assertNotIn('test-cookie', raw)
+        cloud.set_wait(['102:3'], True)
+        other = CloudService(cloud.store, self.key)
         other.tick()
         self.assertFalse(other.snapshot()['running'])
         self.assertEqual(other.snapshot()['reservation']['seatNo'], '3')
         self.assertNotIn('credential', other.snapshot())
+        self.assertNotIn('login', other.snapshot())
 
-    def test_overlapping_ticks_are_rejected(self):
-        self.store.owner = 'different-instance'
+    def test_invalid_login_does_not_register_account(self):
+        from library_login import LoginError
+        self.authenticate.side_effect = LoginError('wrong password')
+        with self.assertRaises(LoginError):
+            self.login()
+        self.assertEqual(self.store.accounts, {})
+
+    def test_failed_token_validation_does_not_register_account(self):
+        self.clients['alice'].reservation = Mock(side_effect=LibraryError('token rejected', expired=True))
         with self.assertRaises(LibraryError):
-            self.cloud.tick()
-        self.assertEqual(self.store.owner, 'different-instance')
+            self.login()
+        self.assertEqual(self.store.accounts, {})
 
-    def test_reconnect_and_disconnect_recover_from_changed_encryption_key(self):
-        self.cloud.connect_token('test-library-token', {})
-        other = CloudService(self.store, Fernet.generate_key())
-        other.connect_token('replacement-token', {})
-        other.disconnect()
-        self.assertNotIn('credential', self.store.document)
-        self.assertFalse(other.snapshot()['connected'])
+    def test_failed_relogin_preserves_existing_saved_credentials(self):
+        from library_login import LoginError
+        cloud = self.login()
+        before = cloud.store.read()
+        self.authenticate.side_effect = LoginError('wrong password')
+        with self.assertRaises(LoginError):
+            self.login()
+        self.assertEqual(cloud.store.read(), before)
+
+    def test_no_password_stored_without_remember(self):
+        cloud = self.login(remember=False)
+        self.assertNotIn('login', cloud.store.read())
+        self.assertFalse(cloud.snapshot()['autoLogin'])
+
+    def test_second_device_login_preserves_wait_without_booking(self):
+        cloud = self.login()
+        cloud.set_wait(['102:3'], True)
+        self.clients['alice'].reserve = Mock()
+        other = self.login()
+        self.assertTrue(other.snapshot()['running'])
+        self.assertEqual(other.snapshot()['targets'], ['102:3'])
+        self.clients['alice'].reserve.assert_not_called()
+
+    def test_account_state_reservations_and_locks_are_isolated(self):
+        alice, bob = self.login(), self.login('bob')
+        alice.set_wait(['102:3'], True)
+        self.assertEqual(bob.snapshot()['targets'], [])
+        self.store.locks[alice.store.account] = 'another-worker'
+        with self.assertRaises(LibraryError):
+            alice.tick()
+        bob.tick()
+        self.store.locks.pop(alice.store.account)
+        alice.tick()
+        self.assertIsNone(bob.snapshot()['reservation'])
+        self.assertEqual(alice.snapshot()['reservation']['seatNo'], '3')
+        alice.disconnect()
+        self.assertTrue(bob.snapshot()['connected'])
+        self.assertTrue(bob.snapshot()['autoLogin'])
+        self.assertNotIn('login', alice.store.read())
+
+    def test_auto_login_after_expiry_defers_reservation_until_next_tick(self):
+        cloud = self.login()
+        cloud.set_wait(['102:3'], True)
+        self.clients['alice'].reservation = Mock(side_effect=LibraryError('expired', expired=True))
+        cloud.tick()
+        self.assertFalse(cloud.snapshot()['connected'])
+        self.clients['alice'] = DemoClient()
+        self.clients['alice'].reserve = Mock(wraps=self.clients['alice'].reserve)
+        cloud.tick()
+        self.assertTrue(cloud.snapshot()['connected'])
+        self.clients['alice'].reserve.assert_not_called()
+        cloud.tick()
+        self.clients['alice'].reserve.assert_called_once()
+
+    def test_failed_auto_login_removes_bad_password_and_stops_retries(self):
+        from library_login import LoginError
+        cloud = self.login()
+        cloud.set_wait(['102:3'], True)
+        self.clients['alice'].reservation = Mock(side_effect=LibraryError('expired', expired=True))
+        cloud.tick()
+        self.authenticate.side_effect = LoginError('wrong password')
+        cloud.tick()
+        calls = self.authenticate.call_count
+        cloud.tick()
+        self.assertEqual(self.authenticate.call_count, calls)
+        self.assertNotIn('login', cloud.store.read())
+        self.assertFalse(cloud.snapshot()['running'])
+
+    def test_network_failure_backs_off_without_discarding_valid_saved_login(self):
+        from library_login import LoginError
+        cloud = self.login()
+        self.clients['alice'].reservation = Mock(side_effect=LibraryError('expired', expired=True))
+        cloud.store.accounts[cloud.store.account]['state']['lastChecked'] = 0
+        cloud.tick()
+        self.authenticate.side_effect = LoginError('offline', kind='unavailable')
+        cloud.tick()
+        calls = self.authenticate.call_count
+        cloud.tick()
+        self.assertEqual(self.authenticate.call_count, calls)
+        self.assertIn('login', cloud.store.read())
 
     def test_disarmed_state_is_durable_before_cloud_write(self):
-        self.cloud.connect_token('test-library-token', {})
-        self.cloud.set_wait(['102:3'], True)
-        original = self.client.reserve
+        cloud = self.login()
+        cloud.set_wait(['102:3'], True)
+        client = self.clients['alice']
+        original = client.reserve
         def reserve(seat):
-            self.assertFalse(self.store.document['state']['running'])
+            self.assertFalse(cloud.store.read()['state']['running'])
             original(seat)
-        self.client.reserve = reserve
-        self.cloud.tick()
+        client.reserve = reserve
+        cloud.tick()
 
-    def test_missing_scheduler_heartbeat_is_visible(self):
-        self.cloud.connect_token('test-library-token', {})
-        self.cloud.set_wait(['102:3'], True)
-        self.assertIsNotNone(self.cloud.snapshot()['error'])
+    def test_browser_sessions_cannot_read_or_modify_other_accounts(self):
+        app = create_app(self.root, 'test-admin-password-long-enough', secret='test-only', secure_cookie=False)
+        app.testing = True
+        alice, bob = app.test_client(), app.test_client()
+        def signin(browser, username):
+            csrf = browser.get('/api/session').json['csrf']
+            response = browser.post('/api/library-login', json={'username': username, 'password': 'valid-password', 'remember': True}, headers={'X-CSRF-Token': csrf})
+            self.assertEqual(response.status_code, 200)
+            return response.json['csrf']
+        alice_csrf = signin(alice, 'alice')
+        signin(bob, 'bob')
+        bob_account = self.root._account_key('bob')
+        response = alice.post('/api/wait', json={'targets': ['102:3'], 'running': True, 'account': bob_account}, headers={'X-CSRF-Token': alice_csrf})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(bob.get('/api/state').json['targets'], [])
+        self.assertEqual(alice.get('/api/state?account=' + bob_account).json['targets'], ['102:3'])
+        self.assertEqual(alice.post('/api/cron', json={'account': bob_account}).status_code, 401)
+        self.assertEqual(app.test_client().get('/api/state').status_code, 401)
+
+    def test_failed_login_creates_no_browser_session_or_account(self):
+        from library_login import LoginError
+        self.authenticate.side_effect = LoginError('wrong password')
+        app = create_app(self.root, 'test-admin-password-long-enough', secret='test-only', secure_cookie=False)
+        browser = app.test_client()
+        csrf = browser.get('/api/session').json['csrf']
+        response = browser.post('/api/library-login', json={'username': 'alice', 'password': 'bad', 'remember': True}, headers={'X-CSRF-Token': csrf})
+        self.assertEqual(response.status_code, 422)
+        self.assertFalse(browser.get('/api/session').json['authorized'])
+        self.assertEqual(browser.get('/api/state').status_code, 401)
+        self.assertEqual(self.store.accounts, {})
+
+
+class ProviderLoginTests(unittest.TestCase):
+    def response(self, body=None, status=200):
+        response = Mock(status_code=status, is_redirect=False)
+        response.json.return_value = body
+        return response
+
+    def test_only_explicit_success_with_token_and_identity_is_accepted(self):
+        from library_login import LoginError, login_to_library
+        with patch('library_login.requests.Session') as factory:
+            session = factory.return_value.__enter__.return_value
+            session.cookies.get_dict.return_value = {}
+            for body in ({'success': False, 'code': 'error.login'}, {'success': True, 'code': 'success.loggedIn', 'data': {}}, {'success': 'true', 'code': 'success.loggedIn'}, {'success': True, 'code': 'warning.secondary.need.authentication'}):
+                session.post.return_value = self.response(body)
+                with self.assertRaises(LoginError):
+                    login_to_library('alice', 'bad')
+            session.post.return_value = self.response({'success': True, 'code': 'success.loggedIn', 'data': {'id': 25, 'accessToken': 'valid-token', 'isPrivacyPolicyAgree': False}})
+            self.assertEqual(login_to_library('alice', 'valid')['identity'], '25')
+
+    def test_html_and_timeout_are_not_reported_as_wrong_password(self):
+        from library_login import LoginError, login_to_library
+        with patch('library_login.requests.Session') as factory:
+            session = factory.return_value.__enter__.return_value
+            response = self.response()
+            response.json.side_effect = ValueError()
+            session.post.return_value = response
+            with self.assertRaises(LoginError) as error:
+                login_to_library('alice', 'password')
+            self.assertEqual(error.exception.kind, 'unavailable')
+            session.post.side_effect = requests.Timeout()
+            with self.assertRaises(LoginError) as error:
+                login_to_library('alice', 'password')
+            self.assertEqual(error.exception.kind, 'unavailable')
 
 
 if __name__ == '__main__':

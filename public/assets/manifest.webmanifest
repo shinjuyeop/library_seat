@@ -1,11 +1,11 @@
 {
   "id": "/",
-  "name": "내 자리 · 도서관 좌석",
-  "short_name": "내 자리",
+  "name": "도서관 좌석",
+  "short_name": "도서관 좌석",
   "lang": "ko",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f4f5ef",
-  "theme_color": "#172f2a",
+  "background_color": "#f7f8f8",
+  "theme_color": "#ffffff",
   "icons": [{"src":"/assets/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]
 }

@@ -1,20 +1,29 @@
-"""Vercel adapter: persist state in Supabase and serialize work with a database lease."""
+﻿"""Account-scoped Supabase state and independent leases for Vercel invocations."""
 import hashlib
+import hmac
 import json
 import os
+import re
 import time
 import uuid
 
 import requests
 from cryptography.fernet import Fernet, InvalidToken
 
+from library_login import LoginError, login_to_library
 from seat_service import LibraryClient, LibraryError, SeatService
 
 
 class SupabaseStore:
-    def __init__(self, url, key):
-        self.url = url.rstrip('/') + '/rest/v1'
+    def __init__(self, url, key, account=None):
+        self.base, self.key, self.account = url.rstrip('/'), key, account
+        self.url = self.base + '/rest/v1'
         self.headers = {'apikey': key, 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'}
+
+    def for_account(self, account):
+        if not isinstance(account, str) or not re.fullmatch(r'[a-f0-9]{64}', account):
+            raise LibraryError('로그인이 필요합니다.')
+        return SupabaseStore(self.base, self.key, account)
 
     def _request(self, method, path, **kwargs):
         try:
@@ -22,23 +31,31 @@ class SupabaseStore:
             response.raise_for_status()
             return response.json()
         except (requests.RequestException, ValueError):
-            raise LibraryError('클라우드 저장소에 연결하지 못했습니다. Supabase 설정을 확인해 주세요.') from None
+            raise LibraryError('저장소에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.') from None
+
+    def _account(self):
+        if not self.account:
+            raise LibraryError('로그인이 필요합니다.')
+        return self.account
+
+    def ensure(self):
+        self._request('POST', '/rpc/library_account_ensure', json={'p_account': self._account()})
 
     def read(self):
-        rows = self._request('GET', '/library_runtime?id=eq.1&select=document')
+        rows = self._request('GET', '/library_accounts', params={'account_key': 'eq.' + self._account(), 'select': 'document'})
         if not rows:
-            raise LibraryError('Supabase 초기 설정이 필요합니다. 데이터베이스 마이그레이션을 실행해 주세요.')
+            raise LibraryError('저장된 계정이 없습니다. 다시 로그인해 주세요.')
         return rows[0]['document']
 
     def claim(self, owner):
-        return self._request('POST', '/rpc/library_claim', json={'p_owner': owner})
+        return self._request('POST', '/rpc/library_account_claim', json={'p_account': self._account(), 'p_owner': owner})
 
     def save(self, owner, document):
-        if not self._request('POST', '/rpc/library_save', json={'p_owner': owner, 'p_document': document}):
+        if not self._request('POST', '/rpc/library_account_save', json={'p_account': self._account(), 'p_owner': owner, 'p_document': document}):
             raise LibraryError('다른 작업이 진행 중이거나 처리 시간이 초과되었습니다. 다시 확인해 주세요.')
 
     def release(self, owner):
-        self._request('POST', '/rpc/library_unlock', json={'p_owner': owner})
+        self._request('POST', '/rpc/library_account_unlock', json={'p_account': self._account(), 'p_owner': owner})
 
 
 class CloudService:
@@ -47,12 +64,27 @@ class CloudService:
 
     def __init__(self, store, encryption_key):
         self.store = store
-        self.cipher = Fernet(encryption_key)
+        self.encryption_key = encryption_key.encode() if isinstance(encryption_key, str) else encryption_key
+        self.cipher = Fernet(self.encryption_key)
+
+    def for_account(self, account):
+        return CloudService(self.store.for_account(account), self.encryption_key)
+
+    def _encrypt(self, value):
+        return self.cipher.encrypt(json.dumps(value).encode()).decode()
+
+    def _decrypt(self, value):
+        try:
+            return json.loads(self.cipher.decrypt(value.encode()))
+        except (InvalidToken, ValueError, KeyError, AttributeError):
+            raise LibraryError('저장된 로그인을 복원하지 못했습니다. 다시 로그인해 주세요.') from None
+
+    def _account_key(self, identity):
+        return hmac.new(self.encryption_key, ('patron:' + identity).encode(), hashlib.sha256).hexdigest()
 
     def throttle(self, address, label, limit, seconds):
-        bucket = hashlib.sha256((str(address) + ':' + label).encode()).hexdigest()
-        return not self.store._request('POST', '/rpc/library_rate_limit',
-                                       json={'p_bucket': bucket, 'p_limit': limit, 'p_seconds': seconds})
+        bucket = hmac.new(self.encryption_key, (str(address) + ':' + label).encode(), hashlib.sha256).hexdigest()
+        return not self.store._request('POST', '/rpc/library_rate_limit', json={'p_bucket': bucket, 'p_limit': limit, 'p_seconds': seconds})
 
     @staticmethod
     def _empty_state():
@@ -65,43 +97,48 @@ class CloudService:
         document = self.store.read()
         state = self._empty_state()
         state.update(document.get('state', {}))
-        state['cloud'] = True
-        state['connected'] = bool(document.get('credential'))
-        state['schedulerLastSeen'] = document.get('schedulerLastSeen')
+        state.update(cloud=True, connected=bool(document.get('credential')), autoLogin=bool(document.get('login')), schedulerLastSeen=document.get('schedulerLastSeen'))
         heartbeat = document.get('schedulerLastSeen')
         if state['running'] and (not heartbeat or time.time() - heartbeat > 120):
-            state['error'] = '예약 스케줄러의 실행을 확인하지 못했습니다. Supabase Cron 설정을 확인해 주세요.'
+            state['error'] = '자동 실행 연결을 확인할 수 없습니다. 잠시 후 다시 확인해 주세요.'
             state['reservationFresh'] = False
         return state
 
-    def _execute(self, action, *, credentials=None, cron=False, discard_credentials=False):
+    def login(self, username, password, *, remember=False):
+        credentials = login_to_library(username, password)
+        # No account row or saved password is created before the provider validates login.
+        client = LibraryClient(credentials['token'], credentials['cookies'])
+        try:
+            reservation = client.reservation()
+        finally:
+            client.close()
+        account = self._account_key(credentials['identity'])
+        scoped = self.for_account(account)
+        scoped.store.ensure()
+        scoped._execute(None, credentials=credentials, reservation=reservation, saved_login={'username': username, 'password': password} if remember else None)
+        return account
+
+    def _execute(self, action, *, credentials=None, reservation=None, saved_login=None, cron=False, discard_credentials=False):
         owner = str(uuid.uuid4())
         if not self.store.claim(owner):
-            raise LibraryError('서버가 좌석을 확인 중입니다. 잠시 후 다시 시도해 주세요.')
+            raise LibraryError('좌석을 확인 중입니다. 잠시 후 다시 시도해 주세요.')
         worker = None
         try:
             document = self.store.read()
             state = self._empty_state()
             state.update(document.get('state', {}))
             client = None
-            encrypted = document.get('credential')
-            if encrypted and not credentials and not discard_credentials:
-                try:
-                    credential = json.loads(self.cipher.decrypt(encrypted.encode()))
-                    client = LibraryClient(credential['token'], credential['cookies'])
-                except (InvalidToken, ValueError, KeyError):
-                    raise LibraryError('저장된 로그인을 복원하지 못했습니다. 암호화 키를 확인하거나 다시 연결해 주세요.') from None
-
+            if document.get('credential') and not credentials and not discard_credentials:
+                credential = self._decrypt(document['credential'])
+                client = LibraryClient(credential['token'], credential['cookies'])
             store = self.store
             class RuntimeStore:
                 def load(self):
                     return {'targets': state['targets'], 'running': state['running']}
-
                 def save(self, targets, running):
                     document['state'] = worker.snapshot()
-                    # Before external writes, this durable save disarms retries after a crash.
+                    # Disarm retries before an external reservation write.
                     store.save(owner, document)
-
             worker = SeatService(RuntimeStore(), client=client)
             worker.state.update(state)
             worker._update(connected=client is not None, connecting=False)
@@ -109,17 +146,25 @@ class CloudService:
                 document['schedulerLastSeen'] = time.time()
             try:
                 if credentials:
-                    new_client = LibraryClient(credentials['token'], credentials['cookies'])
-                    try:
-                        reservation = new_client.reservation()
-                    except Exception:
-                        new_client.close()
-                        raise
-                    worker._disconnect_client()
-                    worker.client = new_client
-                    document['credential'] = self.cipher.encrypt(json.dumps(credentials).encode()).decode()
-                    worker._update(connected=True, error=None, reservation=reservation, reservationFresh=True)
-                    worker._event('도서관 계정을 클라우드에 연결했습니다.')
+                    worker.client = LibraryClient(credentials['token'], credentials['cookies'])
+                    document['credential'] = self._encrypt({'token': credentials['token'], 'cookies': credentials['cookies']})
+                    if saved_login:
+                        document['login'] = self._encrypt(saved_login)
+                    else:
+                        document.pop('login', None)
+                    document.pop('loginRetryAt', None)
+                    worker._update(connected=True, running=False, error=None, reservation=reservation, reservationFresh=True)
+                    worker._event('로그인했습니다.')
+                    worker.tick()  # Read seats now; running=False prevents booking during login.
+                    worker._update(running=bool(state['running'] and worker.client and not worker.snapshot()['reservation']))
+                elif discard_credentials:
+                    document.pop('login', None)
+                    document.pop('loginRetryAt', None)
+                    action(worker)
+                elif cron and not worker.client and document.get('login'):
+                    if time.time() >= document.get('loginRetryAt', 0):
+                        self._auto_login(worker, document)
+                    # Never retry a reservation in the same invocation as reauthentication.
                 else:
                     action(worker)
             finally:
@@ -132,11 +177,31 @@ class CloudService:
                 worker.client.close()
             self.store.release(owner)
 
-    def connect(self, username, password):
-        raise LibraryError('클라우드는 PC의 connect_cloud.py로 도서관 로그인을 연결해 주세요.')
-
-    def connect_token(self, token, cookies):
-        self._execute(None, credentials={'token': token, 'cookies': cookies})
+    def _auto_login(self, worker, document):
+        new_client = None
+        document['loginRetryAt'] = time.time() + 300
+        worker._save()
+        try:
+            saved = self._decrypt(document['login'])
+            credentials = login_to_library(saved['username'], saved['password'])
+            if not hmac.compare_digest(self._account_key(credentials['identity']), self.store.account):
+                raise LoginError('계정 정보가 변경되었습니다. 다시 로그인해 주세요.', kind='action_required')
+            new_client = LibraryClient(credentials['token'], credentials['cookies'])
+            reservation = new_client.reservation()
+            worker.client, new_client = new_client, None
+            document['credential'] = self._encrypt({'token': credentials['token'], 'cookies': credentials['cookies']})
+            document.pop('loginRetryAt', None)
+            worker._update(connected=True, error=None, reservation=reservation, reservationFresh=True)
+            worker._event('자동로그인했습니다.')
+        except LibraryError as error:
+            worker._update(error=str(error), connected=False, reservationFresh=False)
+            if not isinstance(error, LoginError) or error.kind != 'unavailable':
+                document.pop('login', None)
+                worker._update(running=False)
+                worker._event('자동로그인에 실패했습니다. 비밀번호를 다시 입력해 주세요.')
+        finally:
+            if new_client:
+                new_client.close()
 
     def disconnect(self):
         self._execute(lambda worker: worker.disconnect(), discard_credentials=True)
@@ -156,12 +221,10 @@ class CloudService:
     def tick(self):
         def poll(worker):
             state = worker.snapshot()
-            # Idle accounts refresh at most once every five minutes; active waiting polls every tick.
             if state['running'] or (state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE') or time.time() - (state['lastChecked'] or 0) >= 300:
                 worker.tick()
         self._execute(poll, cron=True)
 
 
 def service_from_env():
-    return CloudService(SupabaseStore(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SERVICE_ROLE_KEY']),
-                        os.environ['LIBRARY_ENCRYPTION_KEY'])
+    return CloudService(SupabaseStore(os.environ['SUPABASE_URL'], os.environ['SUPABASE_SERVICE_ROLE_KEY']), os.environ['LIBRARY_ENCRYPTION_KEY'])

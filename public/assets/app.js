@@ -2,6 +2,7 @@
 const $ = (id) => document.getElementById(id);
 let csrf = '', state = null, selected = new Set(), dirty = false, room = 102;
 let busy = false, authorized = false, reachable = true, fetching = false, toastTimer;
+let directLogin = true;
 const timeLabel = (seconds) => seconds ? new Date(seconds * 1000).toLocaleTimeString('ko-KR', {timeZone:'Asia/Seoul', hour:'2-digit', minute:'2-digit', hour12:false}) : '';
 
 function toast(message) {
@@ -23,7 +24,7 @@ async function api(path, body) {
   catch (_) { throw new Error('서버에 연결하지 못했습니다. 네트워크를 확인해 주세요.'); }
   const data = await response.json().catch(() => ({error:'서버 응답을 확인하지 못했습니다. 잠시 후 다시 확인해 주세요.'}));
   if (!response.ok) {
-    if (response.status === 401 && path !== 'login') {
+    if (response.status === 401 && !['login', 'library-login'].includes(path)) {
       authorized = false;
       showScreen();
       await initSession();
@@ -43,6 +44,12 @@ async function initSession() {
     const info = await api('session');
     csrf = info.csrf;
     authorized = info.authorized;
+    directLogin = info.directLogin;
+    $('direct-fields').hidden = !directLogin;
+    $('local-fields').hidden = directLogin;
+    $('login-id').disabled = $('login-password').disabled = !directLogin;
+    $('access-password').disabled = directLogin;
+    $('access-password').required = !directLogin;
     $('demo-banner').hidden = !info.demo;
     showScreen();
     if (authorized) await refreshState();
@@ -90,17 +97,16 @@ function render() {
   if (!state) return;
   $('demo-banner').hidden = !state.demo;
   const canAct = state.connected && reachable && !busy;
-  $('status-badge').textContent = !reachable ? '연결 끊김' : state.connecting ? '로그인 중' : !state.connected ? '연결 필요' : state.error ? '확인 필요' : state.running ? '자동 예약 대기 중' : '대기 준비';
+  $('status-badge').textContent = !reachable ? '연결 끊김' : state.connecting ? '로그인 중' : !state.connected ? '로그인 필요' : state.error ? '확인 필요' : state.running ? '예약 대기 중' : state.reservation ? '배정 있음' : '연결됨';
   $('status-badge').classList.toggle('waiting', !!state.error || !state.connected);
-  $('updated').textContent = state.lastChecked ? `${timeLabel(state.lastChecked)} 마지막 확인` : '아직 확인하지 않았어요';
-  $('monitor-title').textContent = state.connecting ? '도서관에 로그인하고 있어요' : !state.connected ? '도서관 계정을 연결해 주세요' : state.error ? '진행 상태를 확인해 주세요' : state.running ? `${state.targets.length}개 자리의 빈자리를 기다려요` : state.reservation ? '오늘의 자리를 확인하세요' : '원하는 자리를 선택해 주세요';
-  $('monitor-message').textContent = state.message;
-  $('interval').textContent = state.running ? `약 ${state.interval}초 간격` : '대기 중지';
+  $('updated').textContent = state.lastChecked ? `${timeLabel(state.lastChecked)} 기준` : '조회 전';
+  $('interval').textContent = state.running ? `${state.interval}초 간격` : '';
   $('service-error').hidden = !state.error;
   $('service-error').textContent = state.error || '';
   $('connection').hidden = state.connected || state.demo;
   $('connection-form').hidden = !!state.cloud;
-  $('cloud-connection').hidden = !state.cloud;
+  $('reconnect').hidden = !state.cloud;
+  $('auto-login-status').textContent = state.autoLogin ? '자동로그인 켜짐' : '';
   $('connect').disabled = busy || state.connecting;
   $('connect').textContent = state.connecting ? '로그인 중…' : '도서관 연결';
   $('refresh').disabled = !canAct;
@@ -115,13 +121,12 @@ function render() {
     $('reservation-badge').classList.toggle('waiting', temporary || !state.reservationFresh);
     $('reservation-seat').textContent = `${reservation.roomName} · ${reservation.seatNo}번`;
     $('reservation-time').textContent = reservation.endTime ? `종료 ${reservation.endTime}` : reservation.remainingTime != null ? `마지막 조회 기준 ${reservation.remainingTime}분 남음` : '';
-    $('reservation-guide').textContent = temporary ? '도서관의 NFC 태그를 공식 앱으로 읽어 배정을 확정하세요. 임시배정은 도서관이 정한 시간 안에 확정해야 합니다.' : confirmed ? '도서관 서버에서 배정 상태가 확인되었습니다.' : '공식 앱에서 현재 배정 상태를 확인해 주세요.';
+    $('reservation-guide').textContent = temporary ? '제한 시간 안에 현장에서 공식 앱으로 NFC 인증을 완료하세요.' : confirmed ? '배정 확정' : '공식 앱에서 배정 상태를 확인해 주세요.';
     $('release').textContent = temporary ? '임시배정 취소' : '좌석 반납';
     $('release').disabled = !canAct || !state.reservationFresh || (!temporary && !confirmed);
   }
   $('selection-count').textContent = `${selected.size}개 선택`;
-  $('action-title').textContent = state.running ? `${state.targets.length}개 좌석 예약 대기 중` : selected.size ? `${selected.size}개 좌석을 선택했어요` : '원하는 좌석을 선택하세요';
-  $('action-detail').textContent = state.error ? '안내 메시지를 확인해 주세요' : '화면을 꺼도 서버가 기다립니다';
+  $('action-title').textContent = state.running ? `${state.targets.length}개 좌석 대기 중` : selected.size ? `${selected.size}개 선택` : '좌석을 선택하세요';
   $('start-stop').textContent = busy ? '처리 중…' : state.running ? '자동 예약 중지' : '자동 예약 시작';
   $('start-stop').disabled = busy || !reachable || (!state.running && (!canAct || !selected.size || !!reservation));
   renderSeats(canAct);
@@ -154,7 +159,7 @@ function renderSeats(canAct) {
     number.textContent = seat.number; check.textContent = '✓'; top.append(number, check);
     const info = document.createElement('span'), dot = document.createElement('i'), label = document.createElement('span');
     info.className = 'seat-info'; dot.className = 'dot ' + (free ? 'free' : 'occupied');
-    label.textContent = free ? '지금 빈자리' : seat.occupied === null ? '상태 확인 중' : Number.isFinite(Number(seat.remainingTime)) && seat.remainingTime != null ? `${seat.remainingTime}분 남음` : '사용 중';
+    label.textContent = free ? '빈자리' : seat.occupied === null ? '확인 중' : Number.isFinite(Number(seat.remainingTime)) && seat.remainingTime != null ? `${seat.remainingTime}분 남음` : '사용 중';
     info.append(dot, label); button.append(top, info);
     button.addEventListener('click', () => { if (chosen) selected.delete(seat.key); else selected.add(seat.key); dirty = true; render(); });
     tile.append(button);
@@ -172,13 +177,34 @@ function renderSeats(canAct) {
   });
 }
 
-$('access-form').addEventListener('submit', (event) => {
+$('access-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  action(async () => {
-    const response = await api('login', {password:$('access-password').value});
-    csrf = response.csrf; authorized = true; $('access-password').value = ''; showScreen();
-  });
+  if (busy) return;
+  busy = true;
+  $('login-error').hidden = true;
+  $('login-submit').disabled = true;
+  $('login-submit').textContent = '로그인 중…';
+  const passwordInput = directLogin ? $('login-password') : $('access-password');
+  try {
+    const response = await api(directLogin ? 'library-login' : 'login', directLogin
+      ? {username:$('login-id').value.trim(), password:passwordInput.value, remember:$('remember').checked}
+      : {password:passwordInput.value});
+    csrf = response.csrf; authorized = true; state = null; selected.clear(); dirty = false;
+    showScreen();
+    await refreshState();
+  } catch (error) {
+    $('login-error').textContent = error.message;
+    $('login-error').hidden = false;
+    passwordInput.focus();
+  } finally {
+    passwordInput.value = '';
+    busy = false;
+    $('login-submit').disabled = false;
+    $('login-submit').textContent = '로그인';
+    if (state) render();
+  }
 });
+$('reconnect').addEventListener('click', () => { authorized = false; state = null; selected.clear(); dirty = false; showScreen(); $('login-password').focus(); });
 $('connection-form').addEventListener('submit', (event) => {
   event.preventDefault();
   const username = $('library-id').value, password = $('library-password').value;

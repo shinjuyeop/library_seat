@@ -11,7 +11,8 @@ select cron.schedule('library-seat-poll', '30 seconds', $$
       'Content-Type', 'application/json',
       'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'library_cron_secret')
     ),
-    body := '{}'::jsonb,
+    body := jsonb_build_object('account', account_key),
     timeout_milliseconds := 120000
-  );
+  ) from public.library_accounts
+    where document ? 'credential' or document ? 'login';
 $$);

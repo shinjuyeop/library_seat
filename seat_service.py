@@ -95,6 +95,8 @@ class LibraryClient:
             # Do not return arbitrary upstream payloads, which may contain account data.
             message = '도서관 요청이 거절되었습니다. 공식 앱에서 이용 상태를 확인해 주세요.'
             raise LibraryError(message, expired=expired, uncertain=method != 'GET' and response.status_code >= 500)
+        if method == 'GET' and path == 'seat-charges' and body.get('code') == 'success.noRecord':
+            return []  # Explicit empty result used by the official reservation page.
         return body.get('data')
 
     def seats(self, room_id):

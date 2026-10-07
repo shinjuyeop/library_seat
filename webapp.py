@@ -1,7 +1,8 @@
-"""Single-user mobile web app. Run one process / one replica per account."""
+"""Mobile web app with account-scoped cloud sessions."""
 import argparse
 import atexit
 import os
+import re
 import secrets
 import threading
 import time
@@ -13,6 +14,7 @@ from flask import Flask, jsonify, request, send_from_directory, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from seat_service import DemoClient, LibraryError, SeatService, SettingsStore
+from library_login import LoginError
 
 
 def create_app(service, password, *, secret=None, secure_cookie=True):
@@ -22,16 +24,24 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
     app.config.update(
         SECRET_KEY=secret or secrets.token_hex(32), MAX_CONTENT_LENGTH=8192,
         SESSION_COOKIE_HTTPONLY=True, SESSION_COOKIE_SAMESITE='Strict',
-        SESSION_COOKIE_SECURE=secure_cookie, PERMANENT_SESSION_LIFETIME=timedelta(hours=12),
+        SESSION_COOKIE_SECURE=secure_cookie, PERMANENT_SESSION_LIFETIME=timedelta(days=30),
         TRUSTED_HOSTS=os.getenv('LIBRARY_TRUSTED_HOSTS', '').split(',') if os.getenv('LIBRARY_TRUSTED_HOSTS') else None,
     )
     password_hash = generate_password_hash(password)
     attempts = OrderedDict()
     throttle_lock = threading.Lock()
 
+    def authorized():
+        return bool(session.get('authorized') and
+                    (not getattr(service, 'cloud', False) or session.get('account')))
+
+    def account_service():
+        return service.for_account(session['account']) if getattr(service, 'cloud', False) else service
+
     def throttle(label, limit, seconds):
         if getattr(service, 'cloud', False):
-            return service.throttle(request.remote_addr, label, limit, seconds)
+            subject = session['account'] if authorized() and label not in ('library-login', 'login') else request.remote_addr
+            return service.throttle(subject, label, limit, seconds)
         # Behind the supplied proxy all visitors share a bucket. Do not trust arbitrary X-Forwarded-For.
         key = (request.remote_addr, label)
         now = time.monotonic()
@@ -61,7 +71,7 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
                 return jsonify(error='접속 시간이 만료되었습니다. 화면을 새로고침해 주세요.'), 403
             if not request.is_json:
                 return jsonify(error='JSON 요청이 필요합니다.'), 415
-        if request.path not in ('/api/session', '/api/login') and not session.get('authorized'):
+        if request.path not in ('/api/session', '/api/login', '/api/library-login') and not authorized():
             return jsonify(error='웹앱에 먼저 로그인해 주세요.'), 401
         return None
 
@@ -79,6 +89,8 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
 
     @app.errorhandler(LibraryError)
     def library_error(error):
+        if isinstance(error, LoginError):
+            return jsonify(error=str(error), kind=error.kind), 422 if error.kind == 'credentials' else 503 if error.kind == 'unavailable' else 409
         return jsonify(error=str(error)), 409
 
     @app.get('/')
@@ -100,10 +112,38 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
     def session_info():
         if 'csrf' not in session:
             session['csrf'] = secrets.token_urlsafe(32)
-        return jsonify(authorized=bool(session.get('authorized')), csrf=session['csrf'], demo=service.demo)
+        return jsonify(authorized=authorized(), csrf=session['csrf'], demo=service.demo,
+                       directLogin=bool(getattr(service, 'cloud', False)))
+
+    @app.post('/api/library-login')
+    def library_login():
+        if not getattr(service, 'cloud', False):
+            return jsonify(error='이 환경에서는 사용할 수 없습니다.'), 404
+        if throttle('library-login', 5, 60):
+            return jsonify(error='로그인 시도가 많습니다. 1분 후 다시 입력해 주세요.'), 429
+        body = request.get_json()
+        if not isinstance(body, dict):
+            return jsonify(error='아이디와 비밀번호를 입력해 주세요.'), 400
+        username, library_password, remember = body.get('username'), body.get('password'), body.get('remember', False)
+        if type(remember) is not bool or not all(isinstance(v, str) and 0 < len(v) <= 256 for v in (username, library_password)):
+            return jsonify(error='아이디와 비밀번호를 입력해 주세요.'), 400
+        if not username.strip():
+            return jsonify(error='아이디를 입력해 주세요.'), 400
+        if service.throttle('account-login', username.strip().casefold(), 5, 300):
+            return jsonify(error='로그인 시도가 많습니다. 5분 후 다시 입력해 주세요.'), 429
+        # Authorize this browser only after the official login AND reservation read succeed.
+        account = service.login(username.strip(), library_password, remember=remember)
+        session.clear()
+        session['authorized'] = True
+        session['account'] = account
+        session['csrf'] = secrets.token_urlsafe(32)
+        session.permanent = remember
+        return jsonify(csrf=session['csrf'])
 
     @app.post('/api/login')
     def login():
+        if getattr(service, 'cloud', False):
+            return jsonify(error='도서관 아이디와 비밀번호로 로그인해 주세요.'), 410
         if throttle('login', 5, 60):
             return jsonify(error='시도가 너무 많습니다. 1분 후 다시 접속해 주세요.'), 429
         body = request.get_json()
@@ -123,7 +163,7 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
 
     @app.get('/api/state')
     def state():
-        return jsonify(service.snapshot())
+        return jsonify(account_service().snapshot())
 
     @app.post('/api/connect')
     def connect():
@@ -137,12 +177,14 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
         username, library_password = body.get('username'), body.get('password')
         if not all(isinstance(value, str) and 0 < len(value) <= 256 for value in (username, library_password)):
             return jsonify(error='학번과 도서관 비밀번호를 입력해 주세요.'), 400
+        if getattr(service, 'cloud', False):
+            return jsonify(error='로그인 화면에서 다시 연결해 주세요.'), 409
         service.connect(username, library_password)
         return jsonify(ok=True), 202
 
     @app.post('/api/disconnect')
     def disconnect():
-        service.disconnect()
+        account_service().disconnect()
         return jsonify(ok=True)
 
     @app.post('/api/wait')
@@ -150,7 +192,7 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
         body = request.get_json()
         if not isinstance(body, dict):
             return jsonify(error='좌석을 선택해 주세요.'), 400
-        service.set_wait(body.get('targets'), body.get('running'))
+        account_service().set_wait(body.get('targets'), body.get('running'))
         return jsonify(ok=True)
 
     @app.post('/api/reserve')
@@ -158,7 +200,7 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
         body = request.get_json()
         if not isinstance(body, dict) or not isinstance(body.get('key'), str):
             return jsonify(error='좌석을 선택해 주세요.'), 400
-        service.reserve(body['key'])
+        account_service().reserve(body['key'])
         return jsonify(ok=True)
 
     @app.post('/api/release')
@@ -166,7 +208,7 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
         body = request.get_json()
         if not isinstance(body, dict) or not all(isinstance(body.get(key), str) for key in ('id', 'state')):
             return jsonify(error='반납할 좌석을 확인해 주세요.'), 400
-        service.release(body['id'], body['state'])
+        account_service().release(body['id'], body['state'])
         return jsonify(ok=True)
 
     @app.post('/api/refresh')
@@ -174,29 +216,24 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
         if throttle('refresh', 1, 10):
             return jsonify(error='새로고침은 10초마다 가능합니다.'), 429
         if getattr(service, 'cloud', False):
-            service.refresh()
+            account_service().refresh()
         else:
             service.wake.set()
         return jsonify(ok=True)
 
     @app.post('/api/connect-token')
     def connect_token():
-        if not getattr(service, 'cloud', False):
-            return jsonify(error='클라우드 연결 전용입니다.'), 404
-        body = request.get_json()
-        if not isinstance(body, dict) or not isinstance(body.get('token'), str) or not 8 <= len(body['token']) <= 4096:
-            return jsonify(error='연결 정보가 올바르지 않습니다.'), 400
-        cookies = body.get('cookies', {})
-        if not isinstance(cookies, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in cookies.items()):
-            return jsonify(error='연결 정보가 올바르지 않습니다.'), 400
-        service.connect_token(body['token'], cookies)
-        return jsonify(ok=True)
+        return jsonify(error='PC 연결 도구 대신 웹에서 도서관 계정으로 로그인해 주세요.'), 410
 
     @app.post('/api/cron')
     def cron():
         if not getattr(service, 'cloud', False):
             return jsonify(error='Not available'), 404
-        service.tick()
+        body = request.get_json(silent=True)
+        account = body.get('account') if isinstance(body, dict) else None
+        if not isinstance(account, str) or not re.fullmatch(r'[a-f0-9]{64}', account):
+            return jsonify(error='Invalid account'), 400
+        service.for_account(account).tick()
         return jsonify(ok=True)
 
     return app

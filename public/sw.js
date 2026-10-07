@@ -1,4 +1,4 @@
-const CACHE = 'library-shell-v1';
+const CACHE = 'library-shell-v2';
 const ASSETS = ['/', '/assets/style.css', '/assets/app.js', '/assets/icon.svg', '/assets/manifest.webmanifest'];
 self.addEventListener('install', event => { event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS))); self.skipWaiting(); });
 self.addEventListener('activate', event => { event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key.startsWith('library-shell-') && key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim())); });
