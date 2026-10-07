@@ -1,0 +1,20 @@
+{
+  "name": "library-seat-web",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "engines": { "node": "24.x" },
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "node scripts/build.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": { "react": "19.3.0", "react-dom": "19.3.0" },
+  "devDependencies": {
+    "@vitejs/plugin-react": "6.1.2",
+    "vite": "8.3.3",
+    "vitest": "5.0.3",
+    "@testing-library/react": "16.3.3",
+    "jsdom": "27.4.0"
+  }
+}

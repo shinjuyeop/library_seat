@@ -1,5 +1,6 @@
 import copy
 import json
+import re
 import tempfile
 import time
 import unittest
@@ -387,7 +388,13 @@ class ApiTests(ServiceFixture):
         self.assertEqual(response.headers['Cache-Control'], 'no-store')
 
     def test_static_shell_and_cloud_cron_protection(self):
-        for path in ('/', '/assets/app.js', '/assets/style.css', '/assets/manifest.webmanifest', '/sw.js'):
+        with self.browser.get('/') as response:
+            shell = response.text
+        self.assertIn('id="root"', shell)
+        self.assertIn('type="module"', shell)
+        assets = re.findall(r'(?:src|href)="(/assets/[^"?]+\.(?:js|css))"', shell)
+        self.assertEqual(len(assets), 2)
+        for path in ('/', *assets, '/assets/manifest.webmanifest', '/sw.js'):
             with self.browser.get(path) as response:
                 self.assertEqual(response.status_code, 200, path)
         self.assertEqual(self.browser.post('/api/cron', json={}).status_code, 401)

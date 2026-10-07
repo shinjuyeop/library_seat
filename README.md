@@ -1,7 +1,7 @@
 # library_seat
 
 건국대학교 도서관 좌석 모니터링·예약 보조 도구입니다.
-휴대폰 웹앱과 기존 Windows GUI를 제공합니다. 웹앱은 Vercel + Supabase에 배포할 수 있습니다.
+React + Vite 기반 휴대폰 웹앱과 기존 Windows GUI를 제공합니다. 로그인·예약 API는 Flask, 계정 상태와 자동 실행은 Supabase, 배포는 Vercel을 사용합니다.
 
 ## 휴대폰 웹앱
 
@@ -27,7 +27,8 @@
 각자 도서관 계정으로 로그인하면 자신의 좌석·예약·대기만 사용할 수 있습니다. 별도 가입이나 PC 연결은 필요하지 않습니다.
 자동로그인을 선택한 경우 성공한 로그인 정보만 서버에 암호화해 저장하고, 도서관 인증 만료 시 재연결합니다.
 로그인에 실패하면 계정을 등록하거나 잘못 입력한 비밀번호를 저장하지 않습니다.
-자동 갈아타기·임시배정 반복은 기존 GUI에서만 제공합니다.
+웹앱의 `내 좌석 → 임시배정 자동 재예약`을 켜면 배정 9분 후 같은 좌석을 취소·재예약합니다. 기본값은 꺼짐이며 NFC 인증 후 종료됩니다.
+취소 사이에 다른 사람이 잡으면 좌석을 잃을 수 있습니다. 자동 갈아타기는 기존 GUI에서만 제공합니다.
 
 ### 로컬 미리보기
 
@@ -35,6 +36,8 @@
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
+npm ci
+npm run build
 $env:LIBRARY_WEB_PASSWORD="local-demo-password-change-me"
 $env:LIBRARY_COOKIE_SECURE="0" # 로컬 HTTP 미리보기에서만 사용
 python webapp.py --demo
@@ -44,9 +47,16 @@ python webapp.py --demo
 데모는 가상 좌석이며 도서관에 요청하지 않습니다. 실제 로컬 실행은 `--demo`를 빼고 웹 화면에서 도서관에 연결합니다.
 로컬 실행에서는 **PC가 켜져 있어야** 자동 예약이 유지됩니다.
 
+화면 소스는 `frontend/src/`, 아이콘·설치 메타데이터는 `frontend/static/`에 있습니다. Node.js 24를 사용합니다.
+`npm run build`가 `public/`을 새로 생성하므로 결과물을 직접 수정하지 않습니다.
+React 개발 서버가 필요하면 Flask를 `python webapp.py --demo --port 8765`로 실행한 뒤 다른 터미널에서 `npm run dev`를 실행합니다.
+Vite가 같은 출처의 `/api` 요청을 로컬 Flask로 전달합니다. 운영 환경에서는 Vercel이 빌드한 정적 화면과 Flask API를 함께 제공합니다.
+
 ### 검증
 
 ```powershell
+npm test
+npm run build
 python -m unittest discover -s tests -v
 python tests/smoke_browser.py
 ```

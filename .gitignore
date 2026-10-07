@@ -39,3 +39,7 @@ Thumbs.db
 data/
 .vercel/
 test-artifacts/
+
+# React dependencies and generated public app (npm run build)
+node_modules/
+public/

@@ -45,7 +45,10 @@ Supabase `library_accounts`에는 RLS를 켜고 `anon`, `authenticated`, `PUBLIC
 
 - Vercel: `juyeop-shins-projects/library-seat`, Flask, 저장소 루트, `main` 자동 배포, 서울 리전
 - Supabase: `library-seat` (`izdxeebrvneysoydsugg`, 서울)
-- Python 진입점: `app.py`, 정적 파일: `public/`
+- React 화면: `frontend/src/`, 정적 원본: `frontend/static/`, Python 진입점: `app.py`
+- Node.js 24 + Vite 빌드 결과: `public/` (Git에서 제외, 직접 수정하지 않음)
+- `vercel.json`의 Build Command가 `npm ci --include=dev --no-fund && npm run build`를 실행한 뒤 Flask와 정적 파일을 배포합니다.
+- 서비스 워커는 빌드마다 생성된 JS/CSS 이름으로 앱 화면만 캐시합니다. 로그인·예약 응답과 POST 요청은 캐시하지 않습니다.
 
 Vercel Production 환경 변수:
 
@@ -90,14 +93,17 @@ select status_code, timed_out, error_msg, created from net._http_response order 
 ## 검증
 
 ```powershell
+npm ci
+npm test
+npm run build
 .venv\Scripts\python.exe -m unittest discover -s tests -p test_service.py -v
-node --check public/assets/app.js
 ```
 
 로그인 실패 시 저장 방지, 두 계정의 세션·예약·잠금 분리, 암호화, 인증 만료 후 자동로그인, 잘못된 비밀번호 재시도 중단,
 중복 예약 방지와 불명확한 예약 결과의 자동 재전송 방지를 검사합니다.
 6개 열람실의 일반 좌석 예약, 없는 좌석 거절, 0~1분 경계/누락 시간/통신 오류 처리, 집중 확인의 조회 범위와 다음 실행 시각도 검사합니다.
 자동 재예약의 9분 경계, NFC 인증/예약 변경 직전 중단, 취소 전 영구 중지 저장, 실패·프로세스 종료 후 재전송 방지, 계정 격리와 로그아웃 후 지속도 검사합니다.
+React 테스트는 로그인 실패 후 재입력, 검색·선택 순서, 예약 확인, 재예약 스위치, 오프라인 차단, 로그아웃, 선택 중 갱신 및 늦은 응답/중복 클릭을 검사합니다.
 모의 계정의 모바일 UI 검증과 실제 도서관 계정의 예약 검증을 구분합니다. 실제 예약은 로그인 후 확인해야 합니다.
 
 공식 참고: [Vercel Flask](https://vercel.com/docs/frameworks/backend/flask), [Supabase Cron](https://supabase.com/docs/guides/cron)
