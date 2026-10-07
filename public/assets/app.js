@@ -1,6 +1,7 @@
 'use strict';
 const $ = (id) => document.getElementById(id);
-let csrf = '', state = null, selected = new Set(), dirty = false, room = 102;
+let csrf = '', state = null, selected = new Set(), dirty = false;
+let view = 'single', visibleLimit = 60, lastSeatRender = '', pollTimer;
 let busy = false, authorized = false, reachable = true, fetching = false, toastTimer;
 let directLogin = true;
 const timeLabel = (seconds) => seconds ? new Date(seconds * 1000).toLocaleTimeString('ko-KR', {timeZone:'Asia/Seoul', hour:'2-digit', minute:'2-digit', hour12:false}) : '';
@@ -99,8 +100,10 @@ function render() {
   const canAct = state.connected && reachable && !busy;
   $('status-badge').textContent = !reachable ? '연결 끊김' : state.connecting ? '로그인 중' : !state.connected ? '로그인 필요' : state.error ? '확인 필요' : state.running ? '예약 대기 중' : state.reservation ? '배정 있음' : '연결됨';
   $('status-badge').classList.toggle('waiting', !!state.error || !state.connected);
-  $('updated').textContent = state.lastChecked ? `${timeLabel(state.lastChecked)} 기준` : '조회 전';
-  $('interval').textContent = state.running ? `${state.interval}초 간격` : '';
+  $('wait-status').hidden = !state.running;
+  $('wait-title').textContent = `${state.targets.length}개 좌석 자동 예약 대기 중`;
+  $('interval').textContent = state.interval === 1 ? '1초 집중 확인' : `${state.interval}초 확인`;
+  $('interval').title = '0~1분 남은 선택 좌석은 1초 주기로 확인합니다. 실제 간격에는 서버 응답 시간이 영향을 줍니다.';
   $('service-error').hidden = !state.error;
   $('service-error').textContent = state.error || '';
   $('connection').hidden = state.connected || state.demo;
@@ -126,9 +129,14 @@ function render() {
     $('release').disabled = !canAct || !state.reservationFresh || (!temporary && !confirmed);
   }
   $('selection-count').textContent = `${selected.size}개 선택`;
+  $('selected-tab-count').textContent = selected.size;
   $('action-title').textContent = state.running ? `${state.targets.length}개 좌석 대기 중` : selected.size ? `${selected.size}개 선택` : '좌석을 선택하세요';
   $('start-stop').textContent = busy ? '처리 중…' : state.running ? '자동 예약 중지' : '자동 예약 시작';
   $('start-stop').disabled = busy || !reachable || (!state.running && (!canAct || !selected.size || !!reservation));
+  $('action-detail').textContent = state.running ? (state.interval === 1 ? '선택 좌석을 빠르게 확인 중' : '0~1분 구간에 1초 집중 확인') : selected.size ? '선택 순서대로 시도 · 하나가 잡히면 종료' : '여러 좌석 중 하나가 잡히면 종료됩니다.';
+  $('selection-summary').disabled = !selected.size;
+  $('selection-tools').hidden = view !== 'selected' || !selected.size;
+  $('clear-selection').disabled = state.running || busy;
   renderSeats(canAct);
   const events = $('events');
   events.replaceChildren();
@@ -140,41 +148,100 @@ function render() {
   $('empty-events').hidden = state.events.length > 0;
 }
 
+function compactSearch(value) {
+  return value.toLowerCase().replace(/열람실|좌석|제|번|[\s()\-]/g, '');
+}
+
+function filteredSeats() {
+  const query = compactSearch($('seat-search').value.trim());
+  const room = $('room-filter').value;
+  let seats = state.seats.filter(seat =>
+    (view !== 'single' || seat.single) &&
+    (view !== 'selected' || selected.has(seat.key)) &&
+    (room === 'all' || String(seat.roomId) === room) &&
+    (!$('free-only').checked || seat.occupied === false) &&
+    (!query || (/^\d+$/.test(query)
+      ? seat.number.startsWith(query)
+      : compactSearch(seat.roomName + seat.number).includes(query)))
+  );
+  if (view === 'selected') seats.sort((a, b) => [...selected].indexOf(a.key) - [...selected].indexOf(b.key));
+  else if (/^\d+$/.test(query)) seats.sort((a, b) => Number(b.number === query) - Number(a.number === query));
+  return seats;
+}
+
 function renderSeats(canAct) {
-  const container = $('seats');
-  container.replaceChildren();
-  const seats = state.seats.filter((seat) => seat.roomId === room);
+  document.querySelectorAll('[data-view]').forEach(tab => {
+    const active = tab.dataset.view === view;
+    tab.classList.toggle('active', active); tab.setAttribute('aria-pressed', String(active));
+  });
+  const seats = filteredSeats(), visible = seats.slice(0, visibleLimit);
+  const freeCount = seats.filter(seat => seat.occupied === false).length;
+  $('result-count').textContent = seats.length + '석 · 빈자리 ' + freeCount;
+  const timestamps = seats.map(seat => seat.checkedAt || state.lastChecked).filter(Boolean);
+  $('updated').textContent = timestamps.length ? timeLabel(Math.min(...timestamps)) + ' 조회' : '조회 전';
+  $('clear-search').hidden = !$('seat-search').value;
   $('empty-seats').hidden = seats.length > 0;
-  seats.forEach((seat) => {
+  $('empty-title').textContent = view === 'selected' && !selected.size ? '선택한 좌석이 없습니다.' : '조건에 맞는 좌석이 없습니다.';
+  $('empty-message').textContent = view === 'selected' && !selected.size ? '좌석을 눌러 자동 예약할 자리를 선택하세요.' : view === 'single' ? '등록된 1인석은 1열람실 A·B에 있습니다. 전체 좌석에서 다른 자리도 찾을 수 있어요.' : '검색어나 열람실, 빈자리 필터를 바꿔 보세요.';
+  $('load-more').hidden = visibleLimit >= seats.length;
+  $('load-more').textContent = '더 보기 · ' + visible.length + ' / ' + seats.length;
+  const signature = JSON.stringify([view, canAct, state.running, !!state.reservation, [...selected], visible.map(seat => [seat.key, seat.number, seat.roomName, seat.single, seat.occupied, seat.remainingTime])]);
+  if (signature === lastSeatRender) return;
+  lastSeatRender = signature;
+  const focused = document.activeElement?.dataset?.focusKey;
+  const container = $('seats'), fragment = document.createDocumentFragment();
+  visible.forEach(seat => {
     const chosen = selected.has(seat.key), free = seat.occupied === false;
-    const tile = document.createElement('div');
-    tile.className = 'seat-tile' + (chosen ? ' selected' : '');
-    const button = document.createElement('button');
-    button.className = 'seat-select'; button.type = 'button';
+    const minutes = seat.remainingTime == null || seat.remainingTime === '' ? NaN : Number(seat.remainingTime);
+    const urgent = seat.occupied === true && Number.isFinite(minutes) && minutes >= 0 && minutes <= 1;
+    const tile = document.createElement('div'); tile.className = 'seat-tile' + (chosen ? ' selected' : '');
+    const button = document.createElement('button'); button.className = 'seat-select'; button.type = 'button';
+    button.dataset.focusKey = 'select-' + seat.key;
     button.setAttribute('aria-pressed', String(chosen));
-    button.setAttribute('aria-label', `${seat.number}번 ${free ? '빈자리' : '사용 중'} 대기 선택`);
+    button.setAttribute('aria-label', seat.roomName + ' ' + seat.number + '번 ' + (free ? '빈자리' : '사용 중') + ' 대기 선택');
     button.disabled = !canAct || state.running || !!state.reservation;
+    const roomLabel = document.createElement('span'); roomLabel.className = 'seat-room'; roomLabel.textContent = seat.roomName;
     const top = document.createElement('span'), number = document.createElement('span'), check = document.createElement('span');
     top.className = 'seat-top'; number.className = 'seat-number'; check.className = 'seat-check';
-    number.textContent = seat.number; check.textContent = '✓'; top.append(number, check);
+    number.textContent = seat.number; check.textContent = chosen ? [...selected].indexOf(seat.key) + 1 : '';
+    check.setAttribute('aria-hidden', 'true'); top.append(number, check);
     const info = document.createElement('span'), dot = document.createElement('i'), label = document.createElement('span');
-    info.className = 'seat-info'; dot.className = 'dot ' + (free ? 'free' : 'occupied');
-    label.textContent = free ? '빈자리' : seat.occupied === null ? '확인 중' : Number.isFinite(Number(seat.remainingTime)) && seat.remainingTime != null ? `${seat.remainingTime}분 남음` : '사용 중';
-    info.append(dot, label); button.append(top, info);
-    button.addEventListener('click', () => { if (chosen) selected.delete(seat.key); else selected.add(seat.key); dirty = true; render(); });
+    const statusClass = free ? 'free' : urgent ? 'urgent' : 'occupied';
+    info.className = 'seat-info ' + statusClass; dot.className = 'dot ' + statusClass;
+    label.textContent = free ? '예약 가능' : seat.occupied === null ? '확인 필요' : Number.isFinite(minutes) && minutes >= 0 ? Math.ceil(minutes) + '분 남음' : '사용 중';
+    info.append(dot, label); button.append(roomLabel, top, info);
+    button.addEventListener('click', () => {
+      if (chosen) selected.delete(seat.key);
+      else if (selected.size >= 50) return toast('최대 50개 좌석을 선택할 수 있습니다.');
+      else selected.add(seat.key);
+      dirty = true; render();
+    });
     tile.append(button);
+    const bottom = document.createElement('div'); bottom.className = 'seat-bottom';
+    const single = document.createElement('span'); single.className = 'single-label'; single.textContent = seat.single ? '1인석' : '';
+    bottom.append(single);
     if (free) {
       const reserve = document.createElement('button'); reserve.className = 'reserve-now'; reserve.type = 'button'; reserve.textContent = '바로 예약';
+      reserve.dataset.focusKey = 'reserve-' + seat.key;
+      reserve.setAttribute('aria-label', seat.roomName + ' ' + seat.number + '번 바로 예약');
       reserve.disabled = !canAct || !!state.reservation;
       reserve.addEventListener('click', async () => {
-        if (await confirmAction('이 좌석을 예약할까요?', `${seat.roomName} ${seat.number}번 좌석을 예약합니다. 성공하면 나머지 대기는 종료됩니다.`)) {
+        if (await confirmAction('이 좌석을 예약할까요?', seat.roomName + ' ' + seat.number + '번을 예약합니다. 성공하면 나머지 대기는 종료됩니다.')) {
           await action(async () => { await api('reserve', {key:seat.key}); dirty = false; toast('예약 상태를 확인해 주세요.'); });
         }
       });
-      tile.append(reserve);
+      bottom.append(reserve);
     }
-    container.append(tile);
+    tile.append(bottom); fragment.append(tile);
   });
+  container.replaceChildren(fragment);
+  if (focused) [...container.querySelectorAll('[data-focus-key]')].find(button => button.dataset.focusKey === focused)?.focus({preventScroll:true});
+}
+
+function selectView(next) {
+  view = next; visibleLimit = 60;
+  if (next === 'selected') { $('seat-search').value = ''; $('room-filter').value = 'all'; $('free-only').checked = false; }
+  if (state) render();
 }
 
 $('access-form').addEventListener('submit', async (event) => {
@@ -231,14 +298,22 @@ $('logout').addEventListener('click', async () => {
     await action(async () => { await api('logout', {}); authorized = false; state = null; selected.clear(); dirty = false; await initSession(); });
   }
 });
-document.querySelectorAll('[data-room]').forEach((tab) => tab.addEventListener('click', () => {
-  room = Number(tab.dataset.room);
-  document.querySelectorAll('[data-room]').forEach((item) => { const active = item === tab; item.classList.toggle('active', active); item.setAttribute('aria-pressed', String(active)); });
-  if (state) render();
-}));
+document.querySelectorAll('[data-view]').forEach(tab => tab.addEventListener('click', () => selectView(tab.dataset.view)));
+$('seat-search').addEventListener('input', () => { if ($('seat-search').value.trim()) view = 'all'; visibleLimit = 60; if (state) render(); });
+$('clear-search').addEventListener('click', () => { $('seat-search').value = ''; visibleLimit = 60; if (state) render(); $('seat-search').focus(); });
+$('room-filter').addEventListener('change', () => { if (!['all', '102', '101'].includes($('room-filter').value) && view === 'single') view = 'all'; visibleLimit = 60; if (state) render(); });
+$('free-only').addEventListener('change', () => { visibleLimit = 60; if (state) render(); });
+$('load-more').addEventListener('click', () => { visibleLimit += 60; render(); });
+$('reset-filters').addEventListener('click', () => { $('seat-search').value = ''; $('room-filter').value = 'all'; $('free-only').checked = false; selectView('all'); });
+$('selection-summary').addEventListener('click', () => { selectView('selected'); $('seat-heading').scrollIntoView({behavior:'smooth',block:'start'}); });
+$('clear-selection').addEventListener('click', () => { if (state.running || busy) return; selected.clear(); dirty = true; render(); });
 document.addEventListener('visibilitychange', () => { if (!document.hidden) refreshState(); });
 window.addEventListener('online', refreshState);
 window.addEventListener('offline', () => { reachable = false; $('offline').hidden = false; if (state) render(); });
-setInterval(() => { if (!document.hidden) refreshState(); }, 5000);
+async function pollState() {
+  if (!document.hidden) await refreshState();
+  pollTimer = setTimeout(pollState, state?.running && state?.interval === 1 ? 2000 : state?.running ? 5000 : 15000);
+}
+pollTimer = setTimeout(pollState, 5000);
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
 initSession();

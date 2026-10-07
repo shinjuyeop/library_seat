@@ -5,7 +5,10 @@
   "lang": "ko",
   "start_url": "/",
   "display": "standalone",
-  "background_color": "#f7f8f8",
-  "theme_color": "#ffffff",
-  "icons": [{"src":"/assets/icon.svg","sizes":"any","type":"image/svg+xml","purpose":"any"}]
+  "background_color": "#f7f8fa",
+  "theme_color": "#f7f8fa",
+  "icons": [
+    {"src":"/assets/icon-192.png?v=3","sizes":"192x192","type":"image/png","purpose":"any"},
+    {"src":"/assets/icon-512.png?v=3","sizes":"512x512","type":"image/png","purpose":"any maskable"}
+  ]
 }

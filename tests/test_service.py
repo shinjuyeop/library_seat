@@ -24,6 +24,58 @@ class ServiceFixture(unittest.TestCase):
 
 
 class WorkerTests(ServiceFixture):
+    def test_all_six_rooms_and_non_single_seats_are_available(self):
+        from seat_service import ROOMS, SINGLE_SEATS
+        self.service.tick()
+        seats = self.service.snapshot()['seats']
+        self.assertEqual({seat['roomId'] for seat in seats}, set(ROOMS))
+        self.assertEqual({(s['roomId'], s['number']) for s in seats if s['single']}, SINGLE_SEATS)
+        self.assertTrue(any(s['key'] == '232:12' and not s['single'] for s in seats))
+        for room in ROOMS:
+            with self.subTest(room=room):
+                self.client.current = None
+                self.service.reserve(f'{room}:12')
+                self.assertEqual(self.service.snapshot()['reservation']['roomName'], ROOMS[room])
+
+    def test_missing_seat_cannot_be_registered_for_wait(self):
+        with self.assertRaises(LibraryError):
+            self.service.set_wait(['232:99999'], True)
+        self.assertFalse(self.service.snapshot()['running'])
+
+    def test_fast_polling_exact_boundary_and_unknown_remaining_time(self):
+        self.service.set_wait(['232:1'], True)
+        for remaining, expected in [(0,1), (0.5,1), (1,1), ('1',1), (1.01,30), (2,30),
+                                    (-1,30), (None,30), ('',30), (' ',30), ('bad',30), (True,30), (float('nan'),30)]:
+            with self.subTest(remaining=remaining):
+                self.client.seats = Mock(return_value=[{'id':232001,'code':'1','isOccupied':True,'remainingTime':remaining}])
+                before = time.time()
+                self.service.tick(targets_only=True)
+                state = self.service.snapshot()
+                self.assertEqual(state['interval'], expected)
+                self.assertGreaterEqual(state['nextCheck'], before + expected)
+        self.client.reservation = Mock(side_effect=LibraryError('rate limited'))
+        self.service.tick(targets_only=True)
+        self.assertEqual(self.service.snapshot()['interval'], 30)
+
+    def test_fast_polling_only_selected_rooms_preserves_other_room_cache(self):
+        self.service.tick()
+        other = next(s for s in self.service.snapshot()['seats'] if s['key'] == '107:1')
+        self.service.set_wait(['232:1'], True)
+        self.client.seats = Mock(return_value=[{'id':232001,'code':'1','isOccupied':True,'remainingTime':0}])
+        self.service.tick(targets_only=True)
+        self.client.seats.assert_called_once_with(232)
+        self.assertEqual(next(s for s in self.service.snapshot()['seats'] if s['key'] == '107:1'), other)
+        self.assertEqual(self.service.snapshot()['interval'], 1)
+        self.service.set_wait(['232:1'], False)
+        self.assertEqual(self.service.snapshot()['interval'], 30)
+
+    def test_unselected_urgent_seat_does_not_enable_fast_polling(self):
+        self.service.set_wait(['232:2'], True)
+        self.client.seats = Mock(return_value=[{'id':232001,'code':'1','isOccupied':True,'remainingTime':0},
+                                               {'id':232002,'code':'2','isOccupied':True,'remainingTime':10}])
+        self.service.tick(targets_only=True)
+        self.assertEqual(self.service.snapshot()['interval'], 30)
+
     def test_success_stops_all_targets_and_survives_restart(self):
         self.client.reserve = Mock(wraps=self.client.reserve)
         self.service.set_wait(['102:3', '102:393'], True)
@@ -247,6 +299,19 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(other.snapshot()['reservation']['seatNo'], '3')
         self.assertNotIn('credential', other.snapshot())
         self.assertNotIn('login', other.snapshot())
+
+    def test_cloud_dispatch_deadline_tracks_fast_wait_stop_and_idle(self):
+        cloud = self.login()
+        self.assertGreaterEqual(cloud.store.read()['nextPollAt'], time.time() + 290)
+        cloud.set_wait(['232:1'], True)
+        self.assertLess(cloud.store.read()['nextPollAt'], time.time() + 2)
+        self.clients['alice'].seats = Mock(return_value=[{'id':232001,'code':'1','isOccupied':True,'remainingTime':1}])
+        started = time.time()
+        cloud.tick()
+        self.assertEqual(cloud.snapshot()['interval'], 1)
+        self.assertAlmostEqual(cloud.store.read()['nextPollAt'], started + 1, delta=.2)
+        cloud.set_wait(['232:1'], False)
+        self.assertGreater(cloud.store.read()['nextPollAt'], time.time() + 290)
 
     def test_invalid_login_does_not_register_account(self):
         from library_login import LoginError

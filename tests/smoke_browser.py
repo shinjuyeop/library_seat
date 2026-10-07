@@ -43,7 +43,7 @@ def main():
             wait.until(EC.visibility_of_element_located((By.CSS_SELECTOR, '.seat-select')))
             assert driver.execute_script('return document.documentElement.scrollWidth <= window.innerWidth'), 'mobile overflow'
             driver.save_screenshot(str(artifacts / 'mobile.png'))
-            seat = driver.find_element(By.CSS_SELECTOR, '.seat-select[aria-label^="3번 "]')
+            seat = driver.find_element(By.CSS_SELECTOR, '.seat-select[aria-label="1열람실 A 3번 빈자리 대기 선택"]')
             driver.execute_script('arguments[0].scrollIntoView({block:"center"})', seat)
             seat.click()
             assert '1개' in driver.find_element(By.ID, 'selection-count').text

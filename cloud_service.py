@@ -104,6 +104,20 @@ class CloudService:
             state['reservationFresh'] = False
         return state
 
+    @staticmethod
+    def _schedule_document(document, worker):
+        state = worker.snapshot()
+        now = time.time()
+        if not worker.client:
+            due = max(now + 1, document.get('loginRetryAt', 0)) if document.get('login') else now + 300
+        elif state['running']:
+            due = max(now, state.get('nextCheck') or now)
+        elif state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE':
+            due = now + 30
+        else:
+            due = max(now + 1, (state['lastChecked'] or 0) + 300)
+        document['nextPollAt'] = due
+
     def login(self, username, password, *, remember=False):
         credentials = login_to_library(username, password)
         # No account row or saved password is created before the provider validates login.
@@ -137,6 +151,7 @@ class CloudService:
                     return {'targets': state['targets'], 'running': state['running']}
                 def save(self, targets, running):
                     document['state'] = worker.snapshot()
+                    CloudService._schedule_document(document, worker)
                     # Disarm retries before an external reservation write.
                     store.save(owner, document)
             worker = SeatService(RuntimeStore(), client=client)
@@ -157,6 +172,9 @@ class CloudService:
                     worker._event('로그인했습니다.')
                     worker.tick()  # Read seats now; running=False prevents booking during login.
                     worker._update(running=bool(state['running'] and worker.client and not worker.snapshot()['reservation']))
+                    worker._update(interval=worker.poll_interval())
+                    if worker.snapshot()['running']:
+                        worker._update(nextCheck=time.time())
                 elif discard_credentials:
                     document.pop('login', None)
                     document.pop('loginRetryAt', None)
@@ -171,6 +189,7 @@ class CloudService:
                 if not worker.client:
                     document.pop('credential', None)
                 document['state'] = worker.snapshot()
+                self._schedule_document(document, worker)
                 store.save(owner, document)
         finally:
             if worker and worker.client:
@@ -221,8 +240,9 @@ class CloudService:
     def tick(self):
         def poll(worker):
             state = worker.snapshot()
-            if state['running'] or (state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE') or time.time() - (state['lastChecked'] or 0) >= 300:
-                worker.tick()
+            complete_catalog = state.get('catalogVersion') == 1
+            if not complete_catalog or state['running'] or (state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE') or time.time() - (state['lastChecked'] or 0) >= 300:
+                worker.tick(targets_only=bool(state['running'] and complete_catalog))
         self._execute(poll, cron=True)
 
 

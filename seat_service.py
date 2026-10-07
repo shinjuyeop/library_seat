@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import copy
 import json
+import math
+import re
 import sqlite3
 import threading
 import time
@@ -14,8 +16,18 @@ import requests
 from library_config import WATCH_LIST
 
 BASE = 'https://library.konkuk.ac.kr'
-ROOMS = {102: '제1열람실 A', 101: '제1열람실 B'}
+ROOMS = {102: '1열람실 A', 101: '1열람실 B', 232: '2열람실',
+         233: '3열람실 A', 234: '3열람실 B', 107: '5열람실'}
+SINGLE_SEATS = {(room, str(number)) for room, number in WATCH_LIST}
+MAX_TARGETS = 50
 ACTIVE_STATES = {'TEMP_CHARGE', 'CHARGE', 'IN_USE'}
+
+
+def valid_seat_key(key):
+    if not isinstance(key, str) or not re.fullmatch(r'\d{1,6}:\d{1,6}', key):
+        return False
+    room, number = key.split(':')
+    return int(room) in ROOMS and int(number) > 0
 
 
 class LibraryError(Exception):
@@ -154,12 +166,13 @@ class SeatService:
         self.thread = None
         self.login_thread = None
         saved = store.load()
-        allowed = {f'{room}:{seat}' for room, seat in WATCH_LIST}
         self.state = {
             'connected': client is not None, 'connecting': False,
             'running': bool(saved['running']),
-            'targets': [key for key in saved['targets'] if key in allowed],
+            'targets': [key for key in saved['targets'] if valid_seat_key(key)][:MAX_TARGETS],
+            'rooms': [{'id': room, 'name': name} for room, name in ROOMS.items()],
             'seats': [], 'reservation': None, 'reservationFresh': False,
+            'catalogVersion': 0,
             'lastChecked': None, 'nextCheck': None, 'error': None,
             'message': '도서관 계정을 연결해 주세요.' if not client else '좌석 현황을 확인하고 있습니다.',
             'events': [], 'demo': demo, 'interval': self.interval,
@@ -244,9 +257,8 @@ class SeatService:
             self._event('도서관 연결과 자동 예약을 종료했습니다.')
 
     def set_wait(self, targets, running):
-        allowed = {f'{room}:{seat}' for room, seat in WATCH_LIST}
-        if not isinstance(targets, list) or any(not isinstance(key, str) or key not in allowed for key in targets):
-            raise LibraryError('관심 좌석 목록에서 좌석을 선택해 주세요.')
+        if not isinstance(targets, list) or len(targets) > MAX_TARGETS or any(not valid_seat_key(key) for key in targets):
+            raise LibraryError('열람실 좌석을 최대 50개까지 선택해 주세요.')
         if type(running) is not bool:
             raise LibraryError('올바른 대기 상태를 지정해 주세요.')
         if running and not targets:
@@ -263,15 +275,73 @@ class SeatService:
                 self._update(reservation=reservation, reservationFresh=True)
                 if reservation:
                     raise LibraryError('이미 이용 중이거나 임시배정된 좌석이 있습니다. 내 좌석을 확인해 주세요.')
+                try:
+                    available = self._read_seats({int(key.split(':')[0]) for key in targets})
+                except LibraryError as error:
+                    self._failure(error)
+                    raise
+                known = {seat['key'] for seat in available if seat['id']}
+                if any(key not in known for key in targets):
+                    raise LibraryError('좌석 목록이 변경되었습니다. 새로고침 후 다시 선택해 주세요.')
+                self._merge_seats(available)
             self._update(targets=list(dict.fromkeys(targets)), running=running, error=None)
+            self._update(interval=self.poll_interval(), nextCheck=time.time())
             self._save()
             self._event('서버에서 자동 예약을 시작했습니다.' if running else '자동 예약을 중지했습니다.')
             self.wake.set()
 
-    def tick(self):
+    def _read_seats(self, room_ids):
+        seats = []
+        for room_id in ROOMS:
+            if room_id not in room_ids:
+                continue
+            items = self.client.seats(room_id)
+            checked = time.time()
+            for item in items:
+                code = str(item.get('code', ''))
+                if not valid_seat_key(f'{room_id}:{code}'):
+                    continue
+                occupied = item.get('isOccupied')
+                seats.append({
+                    'key': f'{room_id}:{code}', 'roomId': room_id, 'roomName': ROOMS[room_id],
+                    'number': code, 'id': item.get('seatId') or item.get('id'),
+                    'occupied': occupied if type(occupied) is bool else None,
+                    'remainingTime': item.get('remainingTime'),
+                    'single': (room_id, code) in SINGLE_SEATS, 'checkedAt': checked,
+                })
+        return seats
+
+    def _merge_seats(self, seats, room_ids=None):
+        replaced = set(room_ids) if room_ids is not None else {item['roomId'] for item in seats}
+        others = [item for item in self.snapshot()['seats'] if item['roomId'] not in replaced]
+        order = {room: i for i, room in enumerate(ROOMS)}
+        self._update(seats=sorted(others + seats, key=lambda item: (order[item['roomId']], int(item['number']))))
+
+    def poll_interval(self):
+        state = self.snapshot()
+        if not state['running'] or state['error']:
+            return self.interval
+        for seat in state['seats']:
+            if seat['key'] not in state['targets']:
+                continue
+            if seat['occupied'] is False:
+                return 1
+            remaining = seat.get('remainingTime')
+            if remaining is None or isinstance(remaining, bool) or (isinstance(remaining, str) and not remaining.strip()):
+                continue
+            try:
+                minutes = float(remaining)
+            except (TypeError, ValueError):
+                continue
+            if seat['occupied'] is True and math.isfinite(minutes) and 0 <= minutes <= 1:
+                return 1
+        return self.interval
+
+    def tick(self, *, targets_only=False):
         with self.operation:
             if not self.client:
                 return
+            started = time.time()
             try:
                 reservation = self.client.reservation()
                 self._update(reservation=reservation, reservationFresh=True)
@@ -279,21 +349,13 @@ class SeatService:
                     self._update(running=False, targets=[])
                     self._save()
                     self._event('내 좌석이 확인되어 모든 예약 대기를 종료했습니다.')
-                seats = []
-                for room_id, room_name in ROOMS.items():
-                    watch = {seat for room, seat in WATCH_LIST if room == room_id}
-                    for item in self.client.seats(room_id):
-                        code = str(item.get('code'))
-                        if code not in watch:
-                            continue
-                        occupied = item.get('isOccupied')
-                        seats.append({
-                            'key': f'{room_id}:{code}', 'roomId': room_id, 'roomName': room_name,
-                            'number': code, 'id': item.get('seatId') or item.get('id'),
-                            'occupied': occupied if type(occupied) is bool else None,
-                            'remainingTime': item.get('remainingTime'),
-                        })
-                self._update(seats=seats, lastChecked=time.time(), error=None)
+                current = self.snapshot()
+                room_ids = {int(key.split(':')[0]) for key in current['targets']} if targets_only and current['running'] else set(ROOMS)
+                seats = self._read_seats(room_ids)
+                self._merge_seats(seats, room_ids)
+                if room_ids == set(ROOMS):
+                    self._update(catalogVersion=1)
+                self._update(lastChecked=time.time(), error=None)
                 state = self.snapshot()
                 if state['running'] and not reservation:
                     for key in state['targets']:
@@ -317,7 +379,8 @@ class SeatService:
             except LibraryError as error:
                 self._failure(error)
             finally:
-                self._update(nextCheck=time.time() + self.interval if self.client else None)
+                interval = self.poll_interval()
+                self._update(interval=interval, nextCheck=max(started + interval, time.time()) if self.client else None)
 
     def _reserve(self, seat):
         previous = self.snapshot()
@@ -346,7 +409,7 @@ class SeatService:
         with self.operation:
             if not self.client:
                 raise LibraryError('도서관 계정을 먼저 연결해 주세요.')
-            if key not in {f'{room}:{seat}' for room, seat in WATCH_LIST}:
+            if not valid_seat_key(key):
                 raise LibraryError('올바른 좌석을 선택해 주세요.')
             try:
                 current = self.client.reservation()
@@ -401,7 +464,7 @@ class SeatService:
                 with self.operation:
                     self._update(error='서버 처리 중 오류가 발생해 자동 예약을 중지했습니다.', running=False)
                     self._save()
-            self.wake.wait(self.interval)
+            self.wake.wait(max(0, (self.snapshot()['nextCheck'] or time.time() + self.interval) - time.time()))
 
     def stop(self):
         self.stopping.set()
@@ -422,9 +485,10 @@ class DemoClient:
         return copy.deepcopy(self.current)
 
     def seats(self, room_id):
+        numbers = {str(number) for number in range(1, 121)} | {number for room, number in WATCH_LIST if room == room_id}
         return [{'id': room_id * 1000 + int(number), 'code': number,
                  'isOccupied': int(number) % 3 != 0, 'remainingTime': (int(number) * 7) % 180 + 1}
-                for room, number in WATCH_LIST if room == room_id]
+                for number in sorted(numbers, key=int)]
 
     def reserve(self, seat_id):
         room, number = divmod(int(seat_id), 1000)
