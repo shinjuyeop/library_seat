@@ -4,6 +4,8 @@ let csrf = '', state = null, selected = new Set(), dirty = false;
 let view = 'single', visibleLimit = 60, lastSeatRender = '', pollTimer;
 let busy = false, authorized = false, reachable = true, fetching = false, toastTimer;
 let directLogin = true;
+let inspectedKey = null;
+if (window.matchMedia('(display-mode: standalone)').matches || navigator.standalone) document.documentElement.classList.add('standalone');
 const timeLabel = (seconds) => seconds ? new Date(seconds * 1000).toLocaleTimeString('ko-KR', {timeZone:'Asia/Seoul', hour:'2-digit', minute:'2-digit', hour12:false}) : '';
 
 function toast(message) {
@@ -117,6 +119,10 @@ function render() {
   $('disconnect').disabled = busy || !reachable;
   const reservation = state.reservation;
   $('reservation').hidden = !reservation;
+  $('repeat-controls').hidden = reservation?.state !== 'TEMP_CHARGE' && !state.repeat;
+  $('repeat-toggle').setAttribute('aria-checked', String(!!state.repeat));
+  $('repeat-toggle').disabled = busy || !reachable || (!state.repeat && (!canAct || !state.reservationFresh));
+  renderRepeatCountdown();
   if (reservation) {
     const temporary = reservation.state === 'TEMP_CHARGE';
     const confirmed = ['CHARGE','IN_USE'].includes(reservation.state);
@@ -137,6 +143,11 @@ function render() {
   $('selection-summary').disabled = !selected.size;
   $('selection-tools').hidden = view !== 'selected' || !selected.size;
   $('clear-selection').disabled = state.running || busy;
+  const quickSeat = state.seats.find(seat => seat.key === inspectedKey);
+  $('quick-reserve').hidden = view !== 'all' || !quickSeat || !selected.has(inspectedKey) || quickSeat.occupied !== false || !!reservation || state.running;
+  $('quick-seat').textContent = quickSeat ? `${quickSeat.roomName} · ${quickSeat.number}번` : '';
+  $('quick-reserve-button').disabled = !canAct;
+  document.body.classList.toggle('has-quick-reserve', !$('quick-reserve').hidden);
   renderSeats(canAct);
   const events = $('events');
   events.replaceChildren();
@@ -146,6 +157,18 @@ function render() {
     li.append(stamp, text); events.append(li);
   });
   $('empty-events').hidden = state.events.length > 0;
+}
+
+function renderRepeatCountdown() {
+  if (!state?.repeat) { $('repeat-status').textContent = '배정 후 9분마다 취소하고 같은 좌석 예약'; return; }
+  const remaining = Math.max(0, Math.ceil(state.repeat.dueAt - Date.now() / 1000));
+  $('repeat-status').textContent = !reachable || !state.connected || state.error ? '연결 확인 중 · 내 좌석을 확인해 주세요' : remaining ? `${Math.floor(remaining / 60)}분 ${String(remaining % 60).padStart(2, '0')}초 후 재예약` : '재예약 시간 · 서버 확인 중';
+}
+
+async function reserveSeat(seat) {
+  if (await confirmAction('이 좌석을 예약할까요?', seat.roomName + ' ' + seat.number + '번을 예약합니다. 성공하면 나머지 대기는 종료됩니다.')) {
+    await action(async () => { await api('reserve', {key:seat.key}); dirty = false; inspectedKey = null; toast('예약 상태를 확인해 주세요.'); });
+  }
 }
 
 function compactSearch(value) {
@@ -174,7 +197,7 @@ function renderSeats(canAct) {
     const active = tab.dataset.view === view;
     tab.classList.toggle('active', active); tab.setAttribute('aria-pressed', String(active));
   });
-  const seats = filteredSeats(), visible = seats.slice(0, visibleLimit);
+  const seats = filteredSeats(), visible = seats.slice(0, view === 'all' ? visibleLimit * 2 : visibleLimit);
   const freeCount = seats.filter(seat => seat.occupied === false).length;
   $('result-count').textContent = seats.length + '석 · 빈자리 ' + freeCount;
   const timestamps = seats.map(seat => seat.checkedAt || state.lastChecked).filter(Boolean);
@@ -183,17 +206,52 @@ function renderSeats(canAct) {
   $('empty-seats').hidden = seats.length > 0;
   $('empty-title').textContent = view === 'selected' && !selected.size ? '선택한 좌석이 없습니다.' : '조건에 맞는 좌석이 없습니다.';
   $('empty-message').textContent = view === 'selected' && !selected.size ? '좌석을 눌러 자동 예약할 자리를 선택하세요.' : view === 'single' ? '등록된 1인석은 1열람실 A·B에 있습니다. 전체 좌석에서 다른 자리도 찾을 수 있어요.' : '검색어나 열람실, 빈자리 필터를 바꿔 보세요.';
-  $('load-more').hidden = visibleLimit >= seats.length;
+  $('load-more').hidden = visible.length >= seats.length;
+  $('compact-guide').hidden = view !== 'all';
   $('load-more').textContent = '더 보기 · ' + visible.length + ' / ' + seats.length;
   const signature = JSON.stringify([view, canAct, state.running, !!state.reservation, [...selected], visible.map(seat => [seat.key, seat.number, seat.roomName, seat.single, seat.occupied, seat.remainingTime])]);
   if (signature === lastSeatRender) return;
   lastSeatRender = signature;
   const focused = document.activeElement?.dataset?.focusKey;
   const container = $('seats'), fragment = document.createDocumentFragment();
+  container.classList.toggle('compact-seats', view === 'all');
+  const roomGrids = new Map();
   visible.forEach(seat => {
     const chosen = selected.has(seat.key), free = seat.occupied === false;
     const minutes = seat.remainingTime == null || seat.remainingTime === '' ? NaN : Number(seat.remainingTime);
     const urgent = seat.occupied === true && Number.isFinite(minutes) && minutes >= 0 && minutes <= 1;
+    if (view === 'all') {
+      let roomGrid = roomGrids.get(seat.roomId);
+      if (!roomGrid) {
+        const group = document.createElement('section'), heading = document.createElement('h2'), count = document.createElement('span');
+        group.className = 'room-group'; heading.className = 'room-heading';
+        heading.textContent = seat.roomName;
+        const inRoom = seats.filter(item => item.roomId === seat.roomId);
+        count.textContent = `${inRoom.length}석 · 빈자리 ${inRoom.filter(item => item.occupied === false).length}`;
+        heading.append(count); roomGrid = document.createElement('div'); roomGrid.className = 'number-grid';
+        roomGrids.set(seat.roomId, roomGrid);
+        group.append(heading, roomGrid); fragment.append(group);
+      }
+      const cell = document.createElement('button'), number = document.createElement('span'), status = document.createElement('span');
+      cell.type = 'button'; cell.className = 'seat-cell' + (free ? ' free' : urgent ? ' urgent' : '') + (chosen ? ' chosen' : '');
+      cell.dataset.focusKey = 'select-' + seat.key;
+      cell.setAttribute('aria-pressed', String(chosen));
+      const statusText = free ? '빈자리' : seat.occupied === null ? '확인 필요' : Number.isFinite(minutes) && minutes >= 0 ? Math.ceil(minutes) + '분' : '사용 중';
+      cell.setAttribute('aria-label', `${seat.roomName} ${seat.number}번 ${statusText}${seat.single ? ' 1인석' : ''} 대기 선택`);
+      cell.disabled = !canAct || state.running || !!state.reservation;
+      number.className = 'cell-number'; number.textContent = seat.number;
+      status.className = 'cell-status'; status.textContent = statusText;
+      cell.append(number, status);
+      if (chosen) { const order = document.createElement('span'); order.className = 'cell-order'; order.textContent = [...selected].indexOf(seat.key) + 1; order.setAttribute('aria-hidden', 'true'); cell.append(order); }
+      cell.addEventListener('click', () => {
+        if (selected.has(seat.key)) selected.delete(seat.key);
+        else if (selected.size >= 50) return toast('최대 50개 좌석을 선택할 수 있습니다.');
+        else selected.add(seat.key);
+        inspectedKey = seat.key; dirty = true; render();
+      });
+      roomGrid.append(cell);
+      return;
+    }
     const tile = document.createElement('div'); tile.className = 'seat-tile' + (chosen ? ' selected' : '');
     const button = document.createElement('button'); button.className = 'seat-select'; button.type = 'button';
     button.dataset.focusKey = 'select-' + seat.key;
@@ -225,11 +283,7 @@ function renderSeats(canAct) {
       reserve.dataset.focusKey = 'reserve-' + seat.key;
       reserve.setAttribute('aria-label', seat.roomName + ' ' + seat.number + '번 바로 예약');
       reserve.disabled = !canAct || !!state.reservation;
-      reserve.addEventListener('click', async () => {
-        if (await confirmAction('이 좌석을 예약할까요?', seat.roomName + ' ' + seat.number + '번을 예약합니다. 성공하면 나머지 대기는 종료됩니다.')) {
-          await action(async () => { await api('reserve', {key:seat.key}); dirty = false; toast('예약 상태를 확인해 주세요.'); });
-        }
-      });
+      reserve.addEventListener('click', () => reserveSeat(seat));
       bottom.append(reserve);
     }
     tile.append(bottom); fragment.append(tile);
@@ -282,6 +336,12 @@ $('start-stop').addEventListener('click', () => action(async () => {
   await api('wait', {targets:[...selected], running:!state.running}); dirty = false;
 }));
 $('refresh').addEventListener('click', () => action(async () => { await api('refresh', {}); toast('좌석 현황을 확인하고 있습니다.'); }));
+$('quick-reserve-button').addEventListener('click', () => { const seat = state?.seats.find(item => item.key === inspectedKey); if (seat) reserveSeat(seat); });
+$('repeat-toggle').addEventListener('click', async () => {
+  const enabled = !state.repeat, id = state.reservation?.id || '';
+  if (enabled && !await confirmAction('자동 재예약을 켤까요?', '임시배정 후 9분마다 취소하고 같은 좌석을 다시 예약합니다. 취소 직후 다른 사람이 잡으면 자리를 잃을 수 있습니다. 화면을 닫아도 계속되며, NFC 인증을 마치면 종료됩니다.')) return;
+  await action(async () => { await api('repeat', {enabled, id}); });
+});
 $('release').addEventListener('click', async () => {
   const reservation = {...state.reservation};
   if (await confirmAction(reservation.state === 'TEMP_CHARGE' ? '임시배정을 취소할까요?' : '좌석을 반납할까요?', `${reservation.roomName} ${reservation.seatNo}번을 해제합니다. 이 작업은 되돌릴 수 없습니다.`)) {
@@ -294,7 +354,7 @@ $('disconnect').addEventListener('click', async () => {
   }
 });
 $('logout').addEventListener('click', async () => {
-  if (await confirmAction('웹앱에서 로그아웃할까요?', '서버에 등록한 자동 예약 대기는 계속됩니다. 대기를 끝내려면 먼저 자동 예약을 중지해 주세요.')) {
+  if (await confirmAction('웹앱에서 로그아웃할까요?', '자동 예약 대기와 임시배정 자동 재예약은 서버에서 계속됩니다. 종료하려면 먼저 해당 기능을 꺼 주세요.')) {
     await action(async () => { await api('logout', {}); authorized = false; state = null; selected.clear(); dirty = false; await initSession(); });
   }
 });
@@ -312,8 +372,9 @@ window.addEventListener('online', refreshState);
 window.addEventListener('offline', () => { reachable = false; $('offline').hidden = false; if (state) render(); });
 async function pollState() {
   if (!document.hidden) await refreshState();
-  pollTimer = setTimeout(pollState, state?.running && state?.interval === 1 ? 2000 : state?.running ? 5000 : 15000);
+  pollTimer = setTimeout(pollState, state?.running && state?.interval === 1 ? 2000 : state?.running || state?.repeat ? 5000 : 15000);
 }
+setInterval(() => { if (!document.hidden) renderRepeatCountdown(); }, 1000);
 pollTimer = setTimeout(pollState, 5000);
 if ('serviceWorker' in navigator && window.isSecureContext) navigator.serviceWorker.register('/sw.js').catch(() => {});
 initSession();

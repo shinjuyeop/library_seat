@@ -99,7 +99,7 @@ class CloudService:
         state.update(document.get('state', {}))
         state.update(cloud=True, connected=bool(document.get('credential')), autoLogin=bool(document.get('login')), schedulerLastSeen=document.get('schedulerLastSeen'))
         heartbeat = document.get('schedulerLastSeen')
-        if state['running'] and (not heartbeat or time.time() - heartbeat > 120):
+        if (state['running'] or state['repeat']) and (not heartbeat or time.time() - heartbeat > 120):
             state['error'] = '자동 실행 연결을 확인할 수 없습니다. 잠시 후 다시 확인해 주세요.'
             state['reservationFresh'] = False
         return state
@@ -112,6 +112,8 @@ class CloudService:
             due = max(now + 1, document.get('loginRetryAt', 0)) if document.get('login') else now + 300
         elif state['running']:
             due = max(now, state.get('nextCheck') or now)
+        elif state['repeat']:
+            due = now + 30 if state['error'] else max(now + 1, min(now + 30, state['repeat']['dueAt']))
         elif state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE':
             due = now + 30
         else:
@@ -149,7 +151,7 @@ class CloudService:
             class RuntimeStore:
                 def load(self):
                     return {'targets': state['targets'], 'running': state['running']}
-                def save(self, targets, running):
+                def save(self, targets, running, repeat=None):
                     document['state'] = worker.snapshot()
                     CloudService._schedule_document(document, worker)
                     # Disarm retries before an external reservation write.
@@ -168,9 +170,9 @@ class CloudService:
                     else:
                         document.pop('login', None)
                     document.pop('loginRetryAt', None)
-                    worker._update(connected=True, running=False, error=None, reservation=reservation, reservationFresh=True)
+                    worker._update(connected=True, running=False, error=None, reservation=worker._with_booking_time(reservation), reservationFresh=True)
                     worker._event('로그인했습니다.')
-                    worker.tick()  # Read seats now; running=False prevents booking during login.
+                    worker.tick(allow_repeat=False)  # Login only reads, even when a repeat is due.
                     worker._update(running=bool(state['running'] and worker.client and not worker.snapshot()['reservation']))
                     worker._update(interval=worker.poll_interval())
                     if worker.snapshot()['running']:
@@ -210,13 +212,13 @@ class CloudService:
             worker.client, new_client = new_client, None
             document['credential'] = self._encrypt({'token': credentials['token'], 'cookies': credentials['cookies']})
             document.pop('loginRetryAt', None)
-            worker._update(connected=True, error=None, reservation=reservation, reservationFresh=True)
+            worker._update(connected=True, error=None, reservation=worker._with_booking_time(reservation), reservationFresh=True)
             worker._event('자동로그인했습니다.')
         except LibraryError as error:
             worker._update(error=str(error), connected=False, reservationFresh=False)
             if not isinstance(error, LoginError) or error.kind != 'unavailable':
                 document.pop('login', None)
-                worker._update(running=False)
+                worker._update(running=False, repeat=None)
                 worker._event('자동로그인에 실패했습니다. 비밀번호를 다시 입력해 주세요.')
         finally:
             if new_client:
@@ -234,6 +236,9 @@ class CloudService:
     def release(self, expected_id, expected_state):
         self._execute(lambda worker: worker.release(expected_id, expected_state))
 
+    def set_repeat(self, enabled, expected_id):
+        self._execute(lambda worker: worker.set_repeat(enabled, expected_id))
+
     def refresh(self):
         self._execute(lambda worker: worker.tick())
 
@@ -241,7 +246,7 @@ class CloudService:
         def poll(worker):
             state = worker.snapshot()
             complete_catalog = state.get('catalogVersion') == 1
-            if not complete_catalog or state['running'] or (state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE') or time.time() - (state['lastChecked'] or 0) >= 300:
+            if not complete_catalog or state['running'] or state['repeat'] or (state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE') or time.time() - (state['lastChecked'] or 0) >= 300:
                 worker.tick(targets_only=bool(state['running'] and complete_catalog))
         self._execute(poll, cron=True)
 

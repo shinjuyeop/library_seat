@@ -3,12 +3,13 @@
 <head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#f7f8fa"><meta name="apple-mobile-web-app-capable" content="yes"><meta name="apple-mobile-web-app-title" content="도서관 좌석">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <title>도서관 좌석</title>
-<link rel="icon" href="/assets/icon.svg?v=3" type="image/svg+xml"><link rel="icon" href="/assets/favicon-32.png?v=3" sizes="32x32" type="image/png"><link rel="apple-touch-icon" href="/assets/apple-touch-icon.png?v=3" sizes="180x180">
-<link rel="manifest" href="/assets/manifest.webmanifest"><link rel="stylesheet" href="/assets/style.css?v=3"><script src="/assets/app.js?v=3" defer></script>
+<link rel="icon" href="/assets/icon.svg?v=4" type="image/svg+xml"><link rel="icon" href="/assets/favicon-32.png?v=4" sizes="32x32" type="image/png"><link rel="apple-touch-icon" href="/assets/apple-touch-icon.png?v=4" sizes="180x180">
+<link rel="manifest" href="/assets/manifest.webmanifest"><link rel="stylesheet" href="/assets/style.css?v=4"><script src="/assets/app.js?v=4" defer></script>
 </head>
 <body><div class="page">
-<header class="app-header"><a class="brand" href="/"><img src="/assets/icon.svg?v=3" width="32" height="32" alt=""><span>도서관 좌석</span></a><span class="school">건국대학교</span></header>
+<header class="app-header"><a class="brand" href="/"><img src="/assets/icon.svg?v=4" width="32" height="32" alt=""><span>도서관 좌석</span></a><span class="school">건국대학교</span></header>
 <div id="demo-banner" class="notice" hidden>데모 · 실제 예약은 발생하지 않습니다.</div><div id="offline" class="notice warning" role="status" hidden>연결 끊김 · 마지막으로 확인한 정보를 표시합니다.</div>
 <main>
 <section id="access" class="access card" hidden><h1>로그인</h1><p class="access-description">도서관 계정으로 시작하세요.</p>
@@ -22,7 +23,8 @@
 <div class="status-line"><span id="status-badge" class="status-badge">연결 필요</span><button id="refresh" class="refresh-button"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1"/></svg><span>새로고침</span></button></div>
 <p id="service-error" class="notice warning" role="status" hidden></p>
 <section id="connection" class="card" hidden><h2>다시 로그인해 주세요</h2><button id="reconnect" class="primary">로그인</button><form id="connection-form" hidden><label for="library-id">아이디 / 학번</label><input id="library-id" autocomplete="username" required><label for="library-password">비밀번호</label><input id="library-password" type="password" autocomplete="current-password" required><button id="connect" class="primary">로그인</button></form></section>
-<section id="reservation" class="card reservation" hidden><div class="section-heading"><h2>내 좌석</h2><span id="reservation-badge" class="badge"></span></div><p id="reservation-seat" class="seat-display"></p><p id="reservation-time" class="muted"></p><div class="reservation-bottom"><p id="reservation-guide" class="fine"></p><button id="release" class="secondary">예약 취소</button></div></section>
+<section id="reservation" class="card reservation" hidden><div class="section-heading"><h2>내 좌석</h2><span id="reservation-badge" class="badge"></span></div><p id="reservation-seat" class="seat-display"></p><p id="reservation-time" class="muted"></p><div class="reservation-bottom"><p id="reservation-guide" class="fine"></p><button id="release" class="secondary">예약 취소</button></div>
+<div id="repeat-controls" class="repeat-controls" hidden><div class="section-heading"><div><h3>임시배정 자동 재예약</h3><p id="repeat-status" class="fine">배정 후 9분마다 취소하고 같은 좌석 예약</p></div><button id="repeat-toggle" class="switch" role="switch" aria-checked="false" aria-label="임시배정 자동 재예약"><span></span></button></div><p class="repeat-note">서버에서 실행 · NFC 인증 시 종료<br>취소 직후 다른 사람이 예약하면 자리를 잃을 수 있습니다.</p></div></section>
 <section id="wait-status" class="wait-status" hidden aria-label="자동 예약 상태"><div class="section-heading"><strong id="wait-title">자동 예약 대기 중</strong><span id="interval" class="badge"></span></div><p>화면을 닫아도 서버에서 계속 확인합니다.</p></section>
 <section class="seat-browser" aria-labelledby="seat-heading">
 <div class="section-heading title-row"><h1 id="seat-heading">좌석 찾기</h1><span id="selection-count" class="fine">0개 선택</span></div>
@@ -30,6 +32,7 @@
 <div class="view-tabs" role="group" aria-label="좌석 목록"><button data-view="single" aria-pressed="true" class="active">1인석</button><button data-view="all" aria-pressed="false">전체 좌석</button><button data-view="selected" aria-pressed="false">선택한 좌석 <span id="selected-tab-count">0</span></button></div>
 <div class="filters"><label class="select-label" for="room-filter"><span class="sr-only">열람실</span><select id="room-filter"><option value="all">모든 열람실</option><option value="102">1열람실 A</option><option value="101">1열람실 B</option><option value="232">2열람실</option><option value="233">3열람실 A</option><option value="234">3열람실 B</option><option value="107">5열람실</option></select></label><label class="toggle-label"><input id="free-only" type="checkbox"><span>빈자리만</span></label></div>
 <div class="results-line"><span id="result-count">좌석 조회 중</span><span id="updated">조회 전</span></div>
+<p id="compact-guide" class="compact-guide" hidden><span><i class="dot free"></i>빈자리</span><span><i class="dot occupied"></i>사용 중 · 남은 분</span><span>번호를 눌러 선택</span></p>
 <div id="selection-tools" class="selection-tools" hidden><span>선택한 순서대로 예약을 시도합니다.</span><button id="clear-selection" class="text-button">선택 해제</button></div>
 <div id="seats" class="seat-grid"></div>
 <div id="empty-seats" class="empty" hidden><strong id="empty-title">표시할 좌석이 없습니다.</strong><p id="empty-message">검색어나 필터를 바꿔 보세요.</p><button id="reset-filters" class="secondary">전체 좌석 보기</button></div>
@@ -37,7 +40,7 @@
 </section>
 <details class="history"><summary>최근 활동</summary><ol id="events"></ol><p id="empty-events" class="fine">기록 없음</p></details>
 <footer><p>임시배정 후 현장에서 공식 앱으로 NFC 인증해야 합니다.</p><div><span id="auto-login-status"></span><button id="disconnect" class="text-button">연결 해제</button><button id="logout" class="text-button">로그아웃</button></div></footer>
-<div class="action-bar"><button id="selection-summary" class="selection-summary"><strong id="action-title">좌석을 선택하세요</strong><span id="action-detail">여러 좌석 중 하나가 잡히면 종료됩니다.</span></button><button id="start-stop" class="primary">자동 예약 시작</button></div>
+<div class="action-bar"><div id="quick-reserve" class="quick-reserve" hidden><span id="quick-seat"></span><button id="quick-reserve-button" class="text-button">이 자리 바로 예약</button></div><div class="action-main"><button id="selection-summary" class="selection-summary"><strong id="action-title">좌석을 선택하세요</strong><span id="action-detail">여러 좌석 중 하나가 잡히면 종료됩니다.</span></button><button id="start-stop" class="primary">자동 예약 시작</button></div></div>
 </div></main></div>
 <div id="toast" role="status" hidden></div>
 <dialog id="confirm-dialog"><form method="dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p><div class="dialog-actions"><button class="secondary" value="cancel">취소</button><button class="primary" value="confirm">확인</button></div></form></dialog>

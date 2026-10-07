@@ -211,6 +211,14 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
         account_service().release(body['id'], body['state'])
         return jsonify(ok=True)
 
+    @app.post('/api/repeat')
+    def repeat():
+        body = request.get_json()
+        if not isinstance(body, dict) or type(body.get('enabled')) is not bool or not isinstance(body.get('id'), str):
+            return jsonify(error='자동 재예약 설정과 내 좌석을 확인해 주세요.'), 400
+        account_service().set_repeat(body['enabled'], body['id'])
+        return jsonify(ok=True)
+
     @app.post('/api/refresh')
     def refresh():
         if throttle('refresh', 1, 10):
