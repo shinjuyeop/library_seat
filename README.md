@@ -48,7 +48,8 @@ python webapp.py --demo
 로컬 실행에서는 **PC가 켜져 있어야** 자동 예약이 유지됩니다.
 
 화면 소스는 `frontend/src/`, 아이콘·설치 메타데이터는 `frontend/static/`에 있습니다. Node.js 24를 사용합니다.
-`npm run build`가 `public/`을 새로 생성하므로 결과물을 직접 수정하지 않습니다.
+`npm run build`가 `public/`을 새로 생성하므로 결과물을 직접 수정하지 않습니다. 화면 변경 후 빌드 결과도 함께 커밋합니다.
+현재 Vercel Flask 배포가 빌드 전 파일 목록으로 정적 파일을 수집하므로 `public/` 결과물을 저장소에도 포함합니다.
 React 개발 서버가 필요하면 Flask를 `python webapp.py --demo --port 8765`로 실행한 뒤 다른 터미널에서 `npm run dev`를 실행합니다.
 Vite가 같은 출처의 `/api` 요청을 로컬 Flask로 전달합니다. 운영 환경에서는 Vercel이 빌드한 정적 화면과 Flask API를 함께 제공합니다.
 

@@ -46,7 +46,7 @@ Supabase `library_accounts`에는 RLS를 켜고 `anon`, `authenticated`, `PUBLIC
 - Vercel: `juyeop-shins-projects/library-seat`, Flask, 저장소 루트, `main` 자동 배포, 서울 리전
 - Supabase: `library-seat` (`izdxeebrvneysoydsugg`, 서울)
 - React 화면: `frontend/src/`, 정적 원본: `frontend/static/`, Python 진입점: `app.py`
-- Node.js 24 + Vite 빌드 결과: `public/` (Git에서 제외, 직접 수정하지 않음)
+- Node.js 24 + Vite 빌드 결과: `public/` (생성 파일, 직접 수정하지 않음). 현재 Vercel Flask의 정적 파일 수집을 위해 결과물도 Git에 포함하며, 화면 변경 후 `npm run build`를 실행하고 함께 커밋합니다.
 - `vercel.json`의 Build Command가 `npm ci --include=dev --no-fund && npm run build`를 실행한 뒤 Flask와 정적 파일을 배포합니다.
 - 서비스 워커는 빌드마다 생성된 JS/CSS 이름으로 앱 화면만 캐시합니다. 로그인·예약 응답과 POST 요청은 캐시하지 않습니다.
 

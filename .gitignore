@@ -40,6 +40,5 @@ data/
 .vercel/
 test-artifacts/
 
-# React dependencies and generated public app (npm run build)
+# React dependencies
 node_modules/
-public/
