@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { timeLabel } from '../model';
 
 function RepeatCountdown({ repeat, paused }) {
   const [now, setNow] = useState(() => Date.now() / 1000);
@@ -30,7 +31,9 @@ function RepeatCountdown({ repeat, paused }) {
 }
 
 export default function ReservationCard({
+  cardRef,
   data,
+  notice,
   busy,
   reachable,
   onRelease,
@@ -42,9 +45,10 @@ export default function ReservationCard({
   const confirmed = ['CHARGE', 'IN_USE'].includes(reservation?.state);
   const canAct = data.connected && reachable && !busy;
   return (
-    <section id="reservation" className="card reservation">
+    <section id="reservation" className="card reservation" ref={cardRef}
+      tabIndex={-1} aria-labelledby="reservation-heading">
       <div className="section-heading">
-        <h2>내 좌석</h2>
+        <h2 id="reservation-heading">내 좌석</h2>
         <span
           id="reservation-badge"
           className={
@@ -60,6 +64,12 @@ export default function ReservationCard({
                 : '상태 확인 필요'}
         </span>
       </div>
+      {notice && notice.id === reservation?.id && reservationFresh && (
+        <p id="reservation-result" className="reservation-result">
+          {notice.message.startsWith('자동 재예약') ? '자동 재예약 완료' : '배정 완료'}
+          {' · '}{timeLabel(notice.at, true)} 확인
+        </p>
+      )}
       {reservation && (
         <>
           <p id="reservation-seat" className="seat-display">

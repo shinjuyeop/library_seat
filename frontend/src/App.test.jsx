@@ -11,7 +11,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StrictMode } from 'react';
 import App from './App';
-import { useLibrary } from './useLibrary';
+import { pollDelay, useLibrary } from './useLibrary';
 
 const rooms = [
   { id: 102, name: '1열람실 A' },
@@ -115,6 +115,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 const openApp = async () => {
@@ -205,6 +206,11 @@ describe('React app with the existing account API', () => {
     await screen.findByText('임시배정 · NFC 필요');
     expect(writes('reserve')).toHaveLength(1);
     expect(writes('reserve')[0].body).toEqual({ key: '232:3' });
+    expect(document.getElementById('toast').textContent).toBe('배정 완료 · 2열람실 3번');
+    expect(document.getElementById('reservation-result').textContent).toMatch(/배정 완료 · .* 확인/);
+    expect(document.activeElement.id).toBe('reservation');
+    expect(screen.getByRole('button', { name: '내 좌석 보기' }).disabled).toBe(false);
+    expect(screen.queryByRole('button', { name: '자동 예약 시작' })).toBeNull();
     expect(writes('reserve')[0].options.headers['X-CSRF-Token']).toBe(
       'test-csrf',
     );
@@ -244,7 +250,7 @@ describe('React app with the existing account API', () => {
       ),
     );
     expect(writes('release')).toHaveLength(0);
-    expect(screen.getByText('2열람실 · 3번')).toBeTruthy();
+    expect(within(screen.getByRole('region', { name: '내 좌석' })).getByText('2열람실 · 3번')).toBeTruthy();
   });
 
   it('disables mutations when offline while keeping seat information readable', async () => {
@@ -304,6 +310,106 @@ describe('React app with the existing account API', () => {
 });
 
 describe('polling and concurrent user actions', () => {
+  it('keeps checking when a wait job disarms before its first response is shown', async () => {
+    vi.useFakeTimers();
+    const { result } = renderHook(useLibrary);
+    await act(async () => {});
+    fakeFetch.mockImplementationOnce(async () => response({ ok: true }));
+    await act(() => result.current.mutate('wait', {
+      targets: ['232:3'], running: true,
+    }));
+    expect(result.current.data.running).toBe(false);
+    data.reservation = { id: 'fast-1', state: 'TEMP_CHARGE', roomName: '2열람실', seatNo: '3' };
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(result.current.data.reservation.id).toBe('fast-1');
+    expect(result.current.toast).toBe('배정 완료 · 2열람실 3번');
+  });
+
+  it('shows server auto-assignment within the next poll and does not announce it twice', async () => {
+    vi.useFakeTimers();
+    data.running = true;
+    data.interval = 1;
+    data.targets = ['232:3'];
+    render(<App />);
+    await act(async () => {});
+    expect(document.getElementById('reservation')).toBeNull();
+    data.running = false;
+    data.targets = [];
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(document.getElementById('reservation')).toBeNull();
+    data.reservation = {
+      id: 'auto-1', state: 'TEMP_CHARGE', roomName: '2열람실', seatNo: '3',
+    };
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(document.getElementById('toast').textContent).toBe('배정 완료 · 2열람실 3번');
+    expect(document.activeElement.id).toBe('reservation');
+    const scrolls = Element.prototype.scrollIntoView.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(15000); });
+    expect(document.getElementById('toast')).toBeNull();
+    expect(Element.prototype.scrollIntoView.mock.calls).toHaveLength(scrolls);
+    expect(document.getElementById('reservation-result')).not.toBeNull();
+    expect(writes('reserve')).toHaveLength(0);
+    expect(writes('refresh')).toHaveLength(0);
+  });
+
+  it('detects a new repeat reservation for the same seat even across a cancellation snapshot', async () => {
+    vi.useFakeTimers();
+    data.reservation = {
+      id: 'repeat-1', state: 'TEMP_CHARGE', roomName: '2열람실', seatNo: '3', startedAt: 100,
+    };
+    data.repeat = { reservationId: 'repeat-1', dueAt: Date.now() / 1000 + 2 };
+    render(<App />);
+    await act(async () => {});
+    expect(document.getElementById('toast')).toBeNull();
+    data.reservation = null;
+    data.repeat = null;
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    data.reservation = {
+      id: 'repeat-2', state: 'TEMP_CHARGE', roomName: '2열람실', seatNo: '3', startedAt: 200,
+    };
+    data.repeat = { reservationId: 'repeat-2', dueAt: Date.now() / 1000 + 540 };
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    expect(document.getElementById('toast').textContent).toBe('자동 재예약 완료 · 2열람실 3번');
+    expect(document.getElementById('reservation-result').textContent).toMatch(/자동 재예약 완료 · .* 확인/);
+    expect(document.activeElement.id).toBe('reservation');
+    expect(screen.getByText(/후 재예약/)).toBeTruthy();
+    expect(writes('repeat')).toHaveLength(0);
+    expect(writes('reserve')).toHaveLength(0);
+  });
+
+  it('does not announce an unverified or unknown reservation as a success', async () => {
+    const { result } = renderHook(useLibrary);
+    await waitFor(() => expect(result.current.data).not.toBeNull());
+    data.reservation = { id: 'unknown', state: 'TEMP_CHARGE', roomName: '2열람실', seatNo: '3' };
+    data.reservationFresh = false;
+    await act(() => result.current.refresh());
+    expect(result.current.reservationNotice).toBeNull();
+    expect(result.current.toast).toBe('');
+    data.reservationFresh = true;
+    data.reservation.state = 'UNKNOWN';
+    await act(() => result.current.refresh());
+    expect(result.current.reservationNotice).toBeNull();
+  });
+
+  it('refreshes immediately when returning to the browser', async () => {
+    const { result } = renderHook(useLibrary);
+    await waitFor(() => expect(result.current.data).not.toBeNull());
+    data.reservation = { id: 'away-1', state: 'TEMP_CHARGE', roomName: '2열람실', seatNo: '3' };
+    await act(async () => { fireEvent(window, new Event('focus')); });
+    expect(result.current.data.reservation.id).toBe('away-1');
+    expect(result.current.toast).toBe('배정 완료 · 2열람실 3번');
+  });
+
+  it('checks more often while waiting or near a repeat deadline', () => {
+    expect(pollDelay({ running: true, interval: 1 }, 100)).toBe(1000);
+    expect(pollDelay({ running: true, interval: 30 }, 100)).toBe(2000);
+    expect(pollDelay({ repeat: { dueAt: 640 } }, 100)).toBe(5000);
+    expect(pollDelay({ repeat: { dueAt: 112 } }, 100)).toBe(2000);
+    expect(pollDelay({ repeat: { dueAt: 110 } }, 100)).toBe(1000);
+    expect(pollDelay({ repeat: { dueAt: 99 } }, 100)).toBe(1000);
+    expect(pollDelay({ running: false, repeat: null }, 100)).toBe(15000);
+  });
+
   it('keeps unsaved seat selection when background data is refreshed', async () => {
     const { result } = renderHook(useLibrary);
     await waitFor(() => expect(result.current.data).not.toBeNull());

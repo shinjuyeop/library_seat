@@ -6,9 +6,28 @@ export default function ActionBar({
   quickSeat,
   onQuickReserve,
   onSelection,
+  onReservation,
   onWait,
 }) {
   const canAct = data.connected && reachable && !busy;
+  if (data.reservation) {
+    const temporary = data.reservation.state === 'TEMP_CHARGE';
+    const confirmed = ['CHARGE', 'IN_USE'].includes(data.reservation.state);
+    return (
+      <div className="action-bar">
+        <div className="action-main">
+          <div className="selection-summary">
+            <strong>{data.reservation.roomName} · {data.reservation.seatNo}번</strong>
+            <span>{!reachable || !data.reservationFresh
+              ? '마지막 조회 정보 · 상태를 확인해 주세요'
+              : temporary ? '임시배정 완료 · 현장에서 NFC 인증'
+                : confirmed ? '배정 확정' : '배정 상태 확인 필요'}</span>
+          </div>
+          <button className="primary" onClick={onReservation}>내 좌석 보기</button>
+        </div>
+      </div>
+    );
+  }
   const title = data.running
     ? `${data.targets.length}개 좌석 대기 중`
     : selected.length

@@ -8,6 +8,9 @@ export const initialModel = {
   loginError: '',
   initError: '',
   toast: '',
+  reservationNotice: null,
+  observedReservation: null,
+  pollRevision: 0,
 };
 
 export function libraryReducer(state, action) {
@@ -20,9 +23,28 @@ export function libraryReducer(state, action) {
         loginError: '',
         ...(action.session.authorized
           ? {}
-          : { data: null, selected: [], dirty: false }),
+          : {
+              data: null, selected: [], dirty: false,
+              reservationNotice: null, observedReservation: null, toast: '',
+            }),
       };
     case 'snapshot': {
+      const reservation = action.data.reservation;
+      const verified = action.data.reservationFresh && reservation &&
+        ['TEMP_CHARGE', 'CHARGE', 'IN_USE'].includes(reservation.state);
+      const previous = state.observedReservation;
+      const changed = verified && state.data &&
+        (!previous || previous.id !== reservation.id ||
+          (previous.startedAt && reservation.startedAt &&
+            previous.startedAt !== reservation.startedAt));
+      const repeated = changed && previous?.repeatId === previous?.id &&
+        previous?.roomName === reservation.roomName &&
+        previous?.seatNo === reservation.seatNo;
+      const notice = changed ? {
+        id: reservation.id,
+        at: Date.now() / 1000,
+        message: `${repeated ? '자동 재예약 완료' : '배정 완료'} · ${reservation.roomName} ${reservation.seatNo}번`,
+      } : null;
       const reset =
         !state.dirty ||
         action.data.running ||
@@ -32,6 +54,12 @@ export function libraryReducer(state, action) {
         ...state,
         data: action.data,
         reachable: true,
+        ...(verified ? {
+          observedReservation: {
+            ...reservation, repeatId: action.data.repeat?.reservationId,
+          },
+        } : {}),
+        ...(notice ? { reservationNotice: notice, toast: notice.message } : {}),
         ...(reset ? { selected: action.data.targets, dirty: false } : {}),
       };
     }
@@ -121,12 +149,13 @@ export function seatStatus(seat) {
   };
 }
 
-export const timeLabel = (seconds) =>
+export const timeLabel = (seconds, showSeconds = false) =>
   seconds
     ? new Date(seconds * 1000).toLocaleTimeString('ko-KR', {
         timeZone: 'Asia/Seoul',
         hour: '2-digit',
         minute: '2-digit',
+        ...(showSeconds ? { second: '2-digit' } : {}),
         hour12: false,
       })
     : '';

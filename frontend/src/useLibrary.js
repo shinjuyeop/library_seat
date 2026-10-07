@@ -2,6 +2,17 @@ import { useCallback, useEffect, useReducer, useRef } from 'react';
 import { request } from './api';
 import { initialModel, libraryReducer } from './model';
 
+export function pollDelay(data, now = Date.now() / 1000, settlingUntil = 0) {
+  if (!data) return 5000;
+  if (now < settlingUntil) return 1000;
+  if (data.running) return data.interval === 1 ? 1000 : 2000;
+  if (data.repeat) {
+    const untilFastPoll = (data.repeat.dueAt - now - 10) * 1000;
+    return Math.max(1000, Math.min(5000, untilFastPoll));
+  }
+  return 15000;
+}
+
 export function useLibrary() {
   const [model, dispatch] = useReducer(libraryReducer, initialModel);
   const latest = useRef(model);
@@ -9,7 +20,8 @@ export function useLibrary() {
   const session = useRef(null),
     activeRead = useRef(null),
     revision = useRef(0),
-    operation = useRef(false);
+    operation = useRef(false),
+    settling = useRef({ until: 0, reservationId: null });
   const patch = useCallback(
     (value) => dispatch({ type: 'patch', patch: value }),
     [],
@@ -36,8 +48,23 @@ export function useLibrary() {
     activeRead.current = controller;
     try {
       const data = await request('state', { signal: controller.signal });
-      if (!controller.signal.aborted && revision.current === version)
+      if (!controller.signal.aborted && revision.current === version) {
+        const previous = latest.current.data;
+        // The server disarms a job before writing. Keep checking through that gap.
+        if (!data.error &&
+          ((previous?.running && !data.running && !data.reservation) ||
+            (previous?.repeat && !data.repeat))) {
+          settling.current = {
+            until: Date.now() / 1000 + 15,
+            reservationId: previous.reservation?.id,
+          };
+        }
+        if (data.error || (data.reservationFresh && data.reservation &&
+          data.reservation.id !== settling.current.reservationId))
+          settling.current.until = 0;
         dispatch({ type: 'snapshot', data });
+        return data;
+      }
     } catch (error) {
       if (controller.signal.aborted || revision.current !== version) return;
       if (error.status === 401) {
@@ -70,34 +97,32 @@ export function useLibrary() {
     let timer,
       disposed = false;
     const poll = async () => {
-      if (!document.hidden) await refresh();
+      const data = !document.hidden ? await refresh() : null;
       if (disposed) return;
-      const data = latest.current.data;
-      timer = setTimeout(
-        poll,
-        data?.running && data.interval === 1
-          ? 2000
-          : data?.running || data?.repeat
-            ? 5000
-            : 15000,
-      );
+      timer = setTimeout(poll, pollDelay(
+        data || latest.current.data, Date.now() / 1000, settling.current.until,
+      ));
     };
     const resume = () => {
       if (!document.hidden) refresh();
     };
     const offline = () => patch({ reachable: false });
-    timer = setTimeout(poll, 5000);
+    timer = setTimeout(poll, pollDelay(
+      latest.current.data, Date.now() / 1000, settling.current.until,
+    ));
     document.addEventListener('visibilitychange', resume);
     window.addEventListener('online', resume);
+    window.addEventListener('focus', resume);
     window.addEventListener('offline', offline);
     return () => {
       disposed = true;
       clearTimeout(timer);
       document.removeEventListener('visibilitychange', resume);
       window.removeEventListener('online', resume);
+      window.removeEventListener('focus', resume);
       window.removeEventListener('offline', offline);
     };
-  }, [refresh, patch]);
+  }, [refresh, patch, model.pollRevision, model.data?.running, model.data?.interval, model.data?.repeat?.dueAt]);
 
   useEffect(() => {
     if (!model.toast) return;
@@ -126,7 +151,7 @@ export function useLibrary() {
       return false;
     } finally {
       operation.current = false;
-      patch({ busy: false });
+      patch({ busy: false, pollRevision: revision.current });
       await refresh();
     }
   };
@@ -142,6 +167,13 @@ export function useLibrary() {
     patch({ busy: true });
     try {
       await request(path, { body, csrf: session.current?.csrf });
+      if (path === 'reserve' || (path === 'wait' && body.running))
+        settling.current = { until: Date.now() / 1000 + 15, reservationId: null };
+      if (path === 'release' || (path === 'wait' && !body.running) ||
+        (path === 'repeat' && !body.enabled))
+        settling.current.until = 0;
+      if (path === 'release')
+        patch({ reservationNotice: null, observedReservation: null, toast: '' });
       if (resetSelection) dispatch({ type: 'saved-selection' });
       if (message) patch({ toast: message });
       if (path === 'logout') {
@@ -160,7 +192,7 @@ export function useLibrary() {
       return false;
     } finally {
       operation.current = false;
-      patch({ busy: false });
+      patch({ busy: false, pollRevision: revision.current });
       await refresh();
     }
   };

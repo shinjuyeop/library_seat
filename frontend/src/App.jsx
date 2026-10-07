@@ -20,7 +20,19 @@ export default function App() {
   const [inspectedKey, setInspectedKey] = useState(null),
     [confirmation, setConfirmation] = useState(null);
   const dialog = useRef(null),
-    heading = useRef(null);
+    heading = useRef(null),
+    reservationCard = useRef(null);
+  const showReservation = useCallback(() => {
+    reservationCard.current?.scrollIntoView({
+      behavior: window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+        ? 'instant' : 'smooth',
+      block: 'start',
+    });
+    reservationCard.current?.focus({ preventScroll: true });
+  }, []);
+  useEffect(() => {
+    if (library.reservationNotice) showReservation();
+  }, [library.reservationNotice, showReservation]);
   useEffect(() => {
     if (confirmation && !dialog.current?.open) dialog.current?.showModal();
   }, [confirmation]);
@@ -48,7 +60,7 @@ export default function App() {
         mutate(
           'reserve',
           { key: seat.key },
-          { resetSelection: true, message: '예약 상태를 확인해 주세요.' },
+          { resetSelection: true },
         ),
     );
   const release = (reservation) =>
@@ -93,7 +105,11 @@ export default function App() {
           : data?.running
             ? '예약 대기 중'
             : data?.reservation
-              ? '배정 있음'
+              ? data.reservation.state === 'TEMP_CHARGE'
+                ? '임시배정 완료'
+                : ['CHARGE', 'IN_USE'].includes(data.reservation.state)
+                  ? '배정 확정'
+                  : '배정 확인 필요'
               : '연결됨';
   const showSelected = () => {
     setFilters({
@@ -189,7 +205,7 @@ export default function App() {
                   <svg viewBox="0 0 24 24" aria-hidden="true">
                     <path d="M20 7v5h-5M4 17v-5h5M6 7a7 7 0 0 1 12-1l2 6M4 12l2 6a7 7 0 0 0 12-1" />
                   </svg>
-                  <span>새로고침</span>
+                  <span>{busy ? '확인 중…' : '새로고침'}</span>
                 </button>
               </div>
               {data.error && (
@@ -210,7 +226,9 @@ export default function App() {
                 />
               )}
               <ReservationCard
+                cardRef={reservationCard}
                 data={data}
+                notice={library.reservationNotice}
                 busy={busy}
                 reachable={reachable}
                 onRelease={release}
@@ -309,6 +327,7 @@ export default function App() {
                 quickSeat={quickSeat}
                 onQuickReserve={reserve}
                 onSelection={showSelected}
+                onReservation={showReservation}
                 onWait={() =>
                   mutate(
                     'wait',
