@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#172f2a">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="내 자리">
+  <title>내 자리 · 도서관 좌석</title>
+  <link rel="icon" href="/assets/icon.svg" type="image/svg+xml">
+  <link rel="manifest" href="/assets/manifest.webmanifest">
+  <link rel="stylesheet" href="/assets/style.css">
+  <script src="/assets/app.js" defer></script>
+</head>
+<body>
+  <div class="page">
+    <header><a class="brand" href="/" aria-label="내 자리 홈"><img src="/assets/icon.svg" alt=""><span>내 자리<small>LIBRARY SEAT</small></span></a><span class="private">PERSONAL SPACE</span></header>
+    <div id="demo-banner" class="notice" hidden>미리보기 · 가상 좌석이며 실제 예약은 발생하지 않습니다.</div>
+    <div id="offline" class="notice warning" role="status" hidden>서버와 연결되지 않았습니다. 표시된 정보는 최신이 아닙니다. 서버의 대기 작업은 계속될 수 있습니다.</div>
+    <main>
+      <section id="access" class="access card" hidden>
+        <p class="eyebrow">나만의 도서관 좌석 도우미</p><h1>공부할 자리,<br>미리 기다려 둘게요.</h1>
+        <p class="muted">원하는 좌석을 골라두면 서버가 빈자리를 확인합니다.<br>휴대폰 화면을 꺼도 대기는 계속됩니다.</p>
+        <form id="access-form"><label for="access-password">웹앱 접속 비밀번호</label><input id="access-password" name="password" type="password" autocomplete="current-password" required minlength="16"><button class="primary" type="submit">내 자리로 들어가기 <span>→</span></button></form>
+        <p class="fine">서버에 설정한 개인 접속 비밀번호입니다. 도서관 비밀번호는 연결 후 입력합니다.</p>
+      </section>
+      <div id="dashboard" hidden>
+        <div class="intro"><div><p class="eyebrow">건국대학교 · 상허기념도서관</p><h1>오늘의 공부 자리</h1><p class="muted">좋아하는 자리에서, 차분한 시작.</p></div><button id="refresh" class="secondary">새로고침 ↻</button></div>
+        <section class="monitor card"><div class="monitor-head"><span id="status-badge" class="badge">연결 대기</span><span id="updated" class="fine">아직 확인하지 않았어요</span></div><h2 id="monitor-title">도서관 계정을 연결해 주세요</h2><p id="monitor-message">한 번 연결하면 이 서버에서 좌석을 확인합니다.</p><div class="monitor-foot"><span class="pulse"></span><span>자동 예약은 서버에서 실행됩니다</span><span id="interval"></span></div></section>
+        <p id="service-error" class="notice warning" role="status" hidden></p>
+        <section id="connection" class="card" hidden><h2>도서관 연결</h2><p class="muted">도서관 홈페이지에서 사용하는 계정으로 연결하세요.</p><div id="cloud-connection" hidden><p class="muted">처음 한 번 PC의 연결 도구에서 도서관에 로그인해 주세요. 연결 후에는 PC를 꺼도 자동 예약이 계속됩니다.</p><p class="fine">도서관 인증이 만료되면 PC에서 다시 연결해야 합니다. 계정 비밀번호는 클라우드에 저장하지 않습니다.</p></div><form id="connection-form" class="connection-form"><div><label for="library-id">학번 / 아이디</label><input id="library-id" autocomplete="username" required></div><div><label for="library-password">도서관 비밀번호</label><input id="library-password" type="password" autocomplete="current-password" required></div><button id="connect" class="primary" type="submit">도서관 연결</button></form></section>
+        <section id="reservation" class="card reservation" hidden><div class="section-heading"><h2>내 좌석</h2><span id="reservation-badge" class="badge"></span></div><p id="reservation-seat" class="seat-display"></p><p id="reservation-time" class="muted"></p><p id="reservation-guide"></p><button id="release" class="secondary danger">예약 취소</button></section>
+        <section class="seats-section"><div class="section-heading"><div><p class="eyebrow">MY FAVORITE SEATS</p><h2>기다릴 자리를 골라보세요</h2></div><span id="selection-count" class="count">0개 선택</span></div><p class="muted compact">여러 자리를 선택해도 한 자리만 예약합니다.</p><div class="tabs" role="group" aria-label="열람실"><button class="tab active" data-room="102" aria-pressed="true">제1열람실 A</button><button class="tab" data-room="101" aria-pressed="false">제1열람실 B</button></div><div class="legend"><span><i class="dot free"></i>빈자리</span><span><i class="dot occupied"></i>사용 중</span><span><i class="dot chosen"></i>내 선택</span></div><div id="seats" class="seat-grid"></div><p id="empty-seats" class="empty">연결 후 관심 좌석의 현황이 표시됩니다.</p></section>
+        <section class="card history"><div class="section-heading"><h2>최근 활동</h2><span class="fine">최근 20건</span></div><ol id="events"></ol><p id="empty-events" class="muted">대기를 시작하면 이곳에서 진행 상황을 볼 수 있어요.</p></section>
+        <footer><p>임시배정 후에는 도서관에서 공식 앱으로 NFC 인증을 완료해 주세요.<br>예약 성공 여부는 경쟁 상황과 도서관 서버 상태에 따라 달라질 수 있습니다.</p><div><button id="disconnect" class="text-button">도서관 연결 해제</button><button id="logout" class="text-button">웹앱 로그아웃</button></div></footer>
+        <div class="action-bar"><div><strong id="action-title">원하는 좌석을 선택하세요</strong><small id="action-detail">화면을 꺼도 서버가 기다립니다</small></div><button id="start-stop" class="primary">자동 예약 시작</button></div>
+      </div>
+    </main>
+  </div>
+  <div id="toast" role="status" hidden></div>
+  <dialog id="confirm-dialog"><form method="dialog"><h2 id="confirm-title"></h2><p id="confirm-message"></p><div class="dialog-actions"><button class="secondary" value="cancel">돌아가기</button><button class="primary" value="confirm">확인</button></div></form></dialog>
+</body>
+</html>

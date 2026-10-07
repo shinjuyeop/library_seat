@@ -34,3 +34,8 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Private runtime state and deployment metadata
+data/
+.vercel/
+test-artifacts/
