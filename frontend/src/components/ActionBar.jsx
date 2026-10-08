@@ -10,24 +10,8 @@ export default function ActionBar({
   onWait,
 }) {
   const canAct = data.connected && reachable && !busy;
-  if (data.reservation) {
-    const temporary = data.reservation.state === 'TEMP_CHARGE';
-    const confirmed = ['CHARGE', 'IN_USE'].includes(data.reservation.state);
-    return (
-      <div className="action-bar">
-        <div className="action-main">
-          <div className="selection-summary">
-            <strong>{data.reservation.roomName} · {data.reservation.seatNo}번</strong>
-            <span>{!reachable || !data.reservationFresh
-              ? '마지막 조회 정보 · 상태를 확인해 주세요'
-              : temporary ? '임시배정 완료 · 현장에서 NFC 인증'
-                : confirmed ? '배정 확정' : '배정 상태 확인 필요'}</span>
-          </div>
-          <button className="primary" onClick={onReservation}>내 좌석 보기</button>
-        </div>
-      </div>
-    );
-  }
+  const switchBlocked = data.reservation && (!data.reservationFresh ||
+    !['TEMP_CHARGE', 'CHARGE', 'IN_USE'].includes(data.reservation.state));
   const title = data.running
     ? `${data.targets.length}개 좌석 대기 중`
     : selected.length
@@ -37,11 +21,19 @@ export default function ActionBar({
     ? data.interval === 1
       ? '선택 좌석을 빠르게 확인 중'
       : '0~1분 구간에 1초 집중 확인'
-    : selected.length
-      ? '선택 순서대로 시도 · 하나가 잡히면 종료'
-      : '여러 좌석 중 하나가 잡히면 종료됩니다.';
+    : data.reservation
+      ? '현재 좌석 유지 · 빈자리 확인 후 갈아타기'
+      : selected.length
+        ? '선택 순서대로 시도 · 하나가 잡히면 종료'
+        : '여러 좌석 중 하나가 잡히면 종료됩니다.';
   return (
     <div className="action-bar">
+      {data.reservation && (
+        <div className="held-seat-summary">
+          <span>내 좌석 · {data.reservation.roomName} {data.reservation.seatNo}번</span>
+          <button className="text-button" onClick={onReservation}>내 좌석 보기</button>
+        </div>
+      )}
       {quickSeat && (
         <div className="quick-reserve">
           <span>
@@ -50,7 +42,7 @@ export default function ActionBar({
           <button
             id="quick-reserve-button"
             className="text-button"
-            disabled={!canAct}
+            disabled={!canAct || !!switchBlocked}
             onClick={() => onQuickReserve(quickSeat)}
           >
             이 자리 바로 예약
@@ -74,7 +66,7 @@ export default function ActionBar({
             busy ||
             !reachable ||
             (!data.running &&
-              (!canAct || !selected.length || !!data.reservation))
+              (!canAct || !selected.length || !!switchBlocked))
           }
           onClick={onWait}
         >

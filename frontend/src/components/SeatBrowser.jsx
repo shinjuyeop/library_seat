@@ -126,8 +126,10 @@ export default function SeatBrowser({
     seat,
     compact: view === 'all',
     order: selected.indexOf(seat.key) + 1,
-    disabled: !canAct || data.running || !!data.reservation,
-    reserveDisabled: !canAct || !!data.reservation,
+    disabled: !canAct || data.running || (data.reservation && (!data.reservationFresh ||
+      !['TEMP_CHARGE', 'CHARGE', 'IN_USE'].includes(data.reservation.state))),
+    reserveDisabled: !canAct || (data.reservation && (!data.reservationFresh ||
+      !['TEMP_CHARGE', 'CHARGE', 'IN_USE'].includes(data.reservation.state))),
     onToggle,
     onReserve,
   });

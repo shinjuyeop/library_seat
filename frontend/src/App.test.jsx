@@ -101,6 +101,7 @@ beforeEach(() => {
       };
       data.running = false;
       data.targets = [];
+      data.repeat = { reservationId: 'reservation-1', dueAt: Date.now() / 1000 + 540 };
     }
     if (path === 'repeat')
       data.repeat = body.enabled ? { dueAt: Date.now() / 1000 + 540 } : null;
@@ -210,7 +211,7 @@ describe('React app with the existing account API', () => {
     expect(document.getElementById('reservation-result').textContent).toMatch(/배정 완료 · .* 확인/);
     expect(document.activeElement.id).toBe('reservation');
     expect(screen.getByRole('button', { name: '내 좌석 보기' }).disabled).toBe(false);
-    expect(screen.queryByRole('button', { name: '자동 예약 시작' })).toBeNull();
+    expect(screen.getByRole('button', { name: '자동 예약 시작' }).disabled).toBe(true);
     expect(writes('reserve')[0].options.headers['X-CSRF-Token']).toBe(
       'test-csrf',
     );
@@ -218,7 +219,46 @@ describe('React app with the existing account API', () => {
       screen
         .getByRole('switch', { name: '임시배정 자동 재예약' })
         .getAttribute('aria-checked'),
-    ).toBe('false');
+    ).toBe('true');
+  });
+
+  it('keeps the held seat visible and selected switch targets across refreshes', async () => {
+    data.reservation = {
+      id: 'held', seatNo: '21', roomName: '1열람실 B', state: 'CHARGE',
+    };
+    await openApp();
+    allSeats();
+    fireEvent.click(seat('2열람실 31번 1분 대기 선택'));
+    expect(seat('2열람실 31번 1분 대기 선택').getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: '새로고침' }));
+    await waitFor(() => expect(writes('refresh')).toHaveLength(1));
+    await waitFor(() => expect(screen.getByRole('button', { name: '자동 예약 시작' }).disabled).toBe(false));
+    expect(seat('2열람실 31번 1분 대기 선택').getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getByRole('button', { name: '내 좌석 보기' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '자동 예약 시작' }));
+    expect(writes('wait')).toHaveLength(0);
+    expect(within(screen.getByRole('dialog')).getByText(/지금은 현재 좌석을 유지/)).toBeTruthy();
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '확인', exact: true }));
+    await screen.findByRole('button', { name: '자동 예약 중지' });
+    expect(writes('wait')[0].body).toEqual({ targets: ['232:31'], running: true });
+    expect(data.reservation.id).toBe('held');
+    expect(writes('release')).toHaveLength(0);
+    expect(screen.getByText(/현재 좌석을 유지하며 대기/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '자동 예약 중지' }));
+    await screen.findByRole('button', { name: '자동 예약 시작' });
+    expect(writes('wait')[1].body.running).toBe(false);
+  });
+
+  it('offers immediate switching and explains restoration before writing', async () => {
+    data.reservation = { id: 'held', seatNo: '21', roomName: '1열람실 B', state: 'CHARGE' };
+    await openApp();
+    allSeats();
+    fireEvent.click(seat('2열람실 3번 빈자리 대기 선택'));
+    fireEvent.click(screen.getByRole('button', { name: '이 자리 바로 예약' }));
+    expect(within(screen.getByRole('dialog')).getByText(/원래 좌석 재예약을 시도/)).toBeTruthy();
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '확인', exact: true }));
+    await waitFor(() => expect(data.reservation.id).toBe('reservation-1'));
+    expect(writes('reserve')[0].body).toEqual({ key: '232:3' });
   });
 
   it('enables repeat explicitly and disabling it never releases the seat', async () => {

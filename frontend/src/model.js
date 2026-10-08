@@ -48,8 +48,7 @@ export function libraryReducer(state, action) {
       const reset =
         !state.dirty ||
         action.data.running ||
-        (state.data?.running && !action.data.running) ||
-        !!action.data.reservation;
+        (state.data?.running && !action.data.running);
       return {
         ...state,
         data: action.data,
@@ -69,7 +68,8 @@ export function libraryReducer(state, action) {
         state.busy ||
         !state.data?.connected ||
         state.data.running ||
-        state.data.reservation
+        (state.data.reservation && (!state.data.reservationFresh ||
+          !['TEMP_CHARGE', 'CHARGE', 'IN_USE'].includes(state.data.reservation.state)))
       )
         return state;
       if (!state.selected.includes(action.key) && state.selected.length >= 50)

@@ -151,7 +151,7 @@ class CloudService:
             class RuntimeStore:
                 def load(self):
                     return {'targets': state['targets'], 'running': state['running']}
-                def save(self, targets, running, repeat=None):
+                def save(self, targets, running, repeat=None, repeat_control=None):
                     document['state'] = worker.snapshot()
                     CloudService._schedule_document(document, worker)
                     # Disarm retries before an external reservation write.
@@ -173,7 +173,7 @@ class CloudService:
                     worker._update(connected=True, running=False, error=None, reservation=worker._with_booking_time(reservation), reservationFresh=True)
                     worker._event('로그인했습니다.')
                     worker.tick(allow_repeat=False)  # Login only reads, even when a repeat is due.
-                    worker._update(running=bool(state['running'] and worker.client and not worker.snapshot()['reservation']))
+                    worker._update(running=bool(state['running'] and worker.client))
                     worker._update(interval=worker.poll_interval())
                     if worker.snapshot()['running']:
                         worker._update(nextCheck=time.time())

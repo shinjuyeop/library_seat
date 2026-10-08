@@ -20,7 +20,7 @@ function RepeatCountdown({ repeat, paused }) {
   return (
     <p id="repeat-status" className="fine">
       {!repeat
-        ? '배정 후 9분마다 취소하고 같은 좌석 예약'
+        ? '자동 재예약 꺼짐 · 켜면 9분마다 같은 좌석 재예약'
         : paused
           ? '연결 확인 중 · 내 좌석을 확인해 주세요'
           : remaining

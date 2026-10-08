@@ -1,5 +1,5 @@
-const CACHE = 'library-shell-react-2cc4b3612c23';
-const ASSETS = ['/', ...["/assets/index-BhVY1iHR.js","/assets/index-ZqFz5U6H.css"], '/assets/icon.svg?v=5', '/assets/manifest.webmanifest', '/assets/apple-touch-icon.png?v=5', '/assets/icon-192.png?v=5', '/assets/icon-512.png?v=5', '/assets/favicon-32.png?v=5'];
+const CACHE = 'library-shell-react-89695dbfff19';
+const ASSETS = ['/', ...["/assets/index-CFtj_xtK.js","/assets/index-CbmcAyst.css"], '/assets/icon.svg?v=5', '/assets/manifest.webmanifest', '/assets/apple-touch-icon.png?v=5', '/assets/icon-192.png?v=5', '/assets/icon-512.png?v=5', '/assets/favicon-32.png?v=5'];
 self.addEventListener('install', event => { event.waitUntil(caches.open(CACHE).then(cache => cache.addAll(ASSETS))); self.skipWaiting(); });
 self.addEventListener('activate', event => { event.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(key => key.startsWith('library-shell-') && key !== CACHE).map(key => caches.delete(key)))).then(() => self.clients.claim())); });
 self.addEventListener('fetch', event => {

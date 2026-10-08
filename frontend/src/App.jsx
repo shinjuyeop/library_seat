@@ -54,8 +54,10 @@ export default function App() {
   );
   const reserve = (seat) =>
     confirm(
-      '이 좌석을 예약할까요?',
-      `${seat.roomName} ${seat.number}번을 예약합니다. 성공하면 나머지 대기는 종료됩니다.`,
+      data.reservation ? '이 좌석으로 갈아탈까요?' : '이 좌석을 예약할까요?',
+      `${seat.roomName} ${seat.number}번을 예약합니다. ${data.reservation
+        ? '기존 좌석을 취소·반납하고, 새 좌석 예약에 실패하면 원래 좌석 재예약을 시도합니다. 원래 좌석을 잃을 수 있습니다. '
+        : ''}성공하면 나머지 대기는 종료되고, 임시배정은 9분마다 자동 재예약합니다.`,
       () =>
         mutate(
           'reserve',
@@ -81,13 +83,12 @@ export default function App() {
       ? confirm(
           '자동 재예약을 켤까요?',
           '임시배정 후 9분마다 취소하고 같은 좌석을 다시 예약합니다. 취소 직후 다른 사람이 잡으면 자리를 잃을 수 있습니다. 화면을 닫아도 계속되며, NFC 인증을 마치면 종료됩니다.',
-          () => mutate('repeat', { enabled, id }, { resetSelection: true }),
+          () => mutate('repeat', { enabled, id }),
         )
       : mutate('repeat', { enabled, id });
   const canAct = data?.connected && reachable && !busy;
   const quickSeat =
     filters.view === 'all' &&
-    !data?.reservation &&
     !data?.running &&
     selected.includes(inspectedKey)
       ? data?.seats.find(
@@ -123,7 +124,7 @@ export default function App() {
     heading.current?.focus({ preventScroll: true });
   };
   return (
-    <div className={quickSeat ? 'app has-quick-reserve' : 'app'}>
+    <div className={quickSeat || data?.reservation ? 'app has-quick-reserve' : 'app'}>
       <div className="page">
         <header className="app-header">
           <a className="brand" href="/">
@@ -253,7 +254,9 @@ export default function App() {
                         : `${data.interval}초 확인`}
                     </span>
                   </div>
-                  <p>화면을 닫아도 서버에서 계속 확인합니다.</p>
+                  <p>{data.reservation
+                    ? '현재 좌석을 유지하며 대기합니다. 빈자리가 확인되면 갈아타고, 실패하면 원래 좌석 재예약을 시도합니다.'
+                    : '화면을 닫아도 서버에서 계속 확인합니다.'}</p>
                 </section>
               )}
               <SeatBrowser
@@ -328,13 +331,18 @@ export default function App() {
                 onQuickReserve={reserve}
                 onSelection={showSelected}
                 onReservation={showReservation}
-                onWait={() =>
-                  mutate(
+                onWait={() => {
+                  const execute = () => mutate(
                     'wait',
                     { targets: selected, running: !data.running },
                     { resetSelection: true },
-                  )
-                }
+                  );
+                  if (!data.running && data.reservation)
+                    confirm('자동 갈아타기를 시작할까요?',
+                      '지금은 현재 좌석을 유지합니다. 선택한 자리가 비면 기존 좌석을 취소·반납하고 예약합니다. 새 좌석 예약이 실패하면 원래 좌석 재예약을 시도하지만, 다른 사람이 잡으면 자리를 잃을 수 있습니다.',
+                      execute);
+                  else execute();
+                }}
               />
             </div>
           )}
