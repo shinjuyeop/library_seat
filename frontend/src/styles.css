@@ -34,8 +34,8 @@ button, p, strong { word-break: keep-all; overflow-wrap: anywhere; }
 main { padding: 24px 0 48px; }
 .signed-in main { padding-bottom: calc(108px + env(safe-area-inset-bottom)); }
 .has-dock main { padding-bottom: calc(196px + env(safe-area-inset-bottom)); }
-.page-heading { display: flex; align-items: flex-end; justify-content: space-between; gap: 8px; margin-bottom: 26px; }
-.page-heading .eyebrow { margin-bottom: 6px; }
+.page-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 20px; }
+.page-heading h1 { font-size: 28px; letter-spacing: -.8px; }
 .page-heading h1:focus { outline: none; }
 .refresh-button { border: 0; background: none; color: var(--muted); min-height: 44px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 8px 0 8px 8px; font-size: 12px; flex-shrink: 0; }
 .refresh-button svg { width: 17px; height: 17px; }
@@ -208,11 +208,10 @@ body:has(dialog[open]) { overflow: hidden; }
 .history ol { list-style: none; padding: 0; margin: 16px 0 0; }
 .history li { display: flex; gap: 14px; font-size: 12px; padding: 12px 0; border-top: 1px solid var(--line); line-height: 1.75; }
 .history time { color: var(--muted); flex-shrink: 0; }
-.app-footnote { margin-top: 24px; text-align: center; font-size: 12px; color: #7a827c; }
 @media (min-width:701px) {
   .page { padding-inline: 40px; }
   main { padding-top: 36px; }
-  .page-heading { margin-bottom: 32px; }
+  .page-heading { margin-bottom: 24px; }
   .bottom-sheet { margin: auto; border-radius: 26px; }
   .sheet-content { padding: 14px 30px 30px; }
 }
@@ -220,6 +219,7 @@ body:has(dialog[open]) { overflow: hidden; }
 @media (max-width:370px) {
   .page { padding-inline: 18px; }
   h1 { font-size: 31px; }
+  .page-heading h1 { font-size: 26px; }
   .number-grid { grid-template-columns: repeat(5,minmax(0,1fr)); gap: 6px; }
   .browse-toolbar .text-button { font-size: 12px; }
   .card { padding: 20px; }

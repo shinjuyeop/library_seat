@@ -20,6 +20,5 @@ export default function Settings({ data, busy, reachable, onDisconnect, onLogout
       <ol id="events">{data.events.map((item, index) => <li key={item.time + ':' + index}><time>{timeLabel(item.time)}</time><span>{item.text}</span></li>)}</ol>
       {!data.events.length && <p className="fine">아직 활동 기록이 없습니다.</p>}
     </details>
-    <p className="app-footnote">도서관 좌석 · 건국대학교</p>
   </>;
 }

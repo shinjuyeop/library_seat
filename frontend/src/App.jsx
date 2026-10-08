@@ -136,8 +136,8 @@ export default function App() {
         </section> : !session.authorized ? <LoginForm directLogin={session.directLogin} busy={busy} error={library.loginError} onLogin={library.login} />
           : !data ? <section className="card" aria-live="polite"><h1>좌석 확인 중</h1><p className="fine">{reachable ? '저장된 예약과 좌석 현황을 불러옵니다.' : '네트워크 연결 후 다시 시도해 주세요.'}</p>
             {!reachable && <button className="secondary" onClick={library.refresh}>다시 시도</button>}</section> : <div id="dashboard">
-            <div className="page-heading"><div><p className="eyebrow">{tab === 'find' ? '오늘도, 나만의 자리' : tab === 'my' ? '예약과 이용 현황' : '연결과 이용 안내'}</p>
-              <h1 ref={pageHeading} tabIndex={-1}>{titles[tab]}</h1></div>
+            <div className="page-heading">
+              <h1 ref={pageHeading} tabIndex={-1}>{titles[tab]}</h1>
               {tab !== 'settings' && <button id="refresh" className="refresh-button" disabled={!canAct}
                 onClick={() => mutate('refresh', {}, { message: '좌석 현황을 확인하고 있습니다.' })}><Icon name="refresh" /><span>{busy ? '확인 중…' : '새로고침'}</span></button>}
             </div>
