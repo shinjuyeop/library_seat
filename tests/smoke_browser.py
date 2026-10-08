@@ -134,6 +134,25 @@ def main():
             assert service.snapshot()['reservation']['id'] == held_id, 'waiting released held seat'
             driver.execute_script('window.scrollTo(0, 0)')
             screenshot('ios-switch-wait')
+            # Extend a running job in place, then remove just the added target.
+            click('#add-wait-seats')
+            query('2')
+            click('.seat-cell[aria-label="2열람실 2번 15분 상세 보기"]')
+            assert visible('#update-wait-seat').text == '대기에 추가'
+            screenshot('ios-add-to-wait')
+            click('#update-wait-seat')
+            wait.until(lambda d: visible('#selected-tab-count').text == '2')
+            assert service.snapshot()['targets'] == ['232:1', '232:2']
+            assert service.snapshot()['reservation']['id'] == held_id
+            click('[data-view="selected"]')
+            no_overflow()
+            screenshot('ios-live-wait-list')
+            click('.selected-list button[aria-label="2열람실 2번 대기에서 제외"]')
+            wait.until(lambda d: visible('#selected-tab-count').text == '1')
+            assert service.snapshot()['running']
+            assert service.snapshot()['targets'] == ['232:1']
+            assert service.snapshot()['reservation']['id'] == held_id
+            tab('my')
             click('#stop-wait')
             wait.until(lambda d: not service.snapshot()['running'])
 
@@ -193,7 +212,7 @@ def main():
             screenshot('desktop')
             errors = [entry for entry in driver.get_log('browser') if entry['level'] == 'SEVERE']
             assert not errors, json.dumps(errors)
-            print('PASS: 320/390px and desktop layout, 16px search, tab persistence, sheet focus, booking, repeat without navigation jump, held-seat waiting, multiple selection, switching, confirmed state, release; no browser errors')
+            print('PASS: 320/390px and desktop layout, 16px search, tab persistence, sheet focus, booking, repeat without navigation jump, live wait additions/removals, held-seat waiting, multiple selection, switching, confirmed state, release; no browser errors')
         except Exception:
             screenshot('failure')
             raise

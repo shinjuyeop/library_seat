@@ -48,7 +48,7 @@ export default function SeatBrowser({ data, selected, canAct, busy, filters, set
         onClick={() => { change({ query: '' }); searchRef.current?.focus(); }}><Icon name="close" /></button>}
     </div>
     <div className="view-tabs" role="group" aria-label="좌석 목록">
-      {[['single', '1인석'], ['all', '전체 좌석'], ['selected', '선택한 좌석']].map(([key, label]) =>
+      {[['single', '1인석'], ['all', '전체 좌석'], ['selected', data.running ? '대기 중' : '선택한 좌석']].map(([key, label]) =>
         <button key={key} data-view={key} aria-pressed={view === key} className={view === key ? 'active' : ''}
           onClick={() => change({ view: key, ...(key === 'selected' ? { query: '', room: 'all', freeOnly: false } : {}) })}>
           {label}{key === 'selected' && <> <span id="selected-tab-count">{selected.length}</span></>}
@@ -67,22 +67,22 @@ export default function SeatBrowser({ data, selected, canAct, busy, filters, set
     </div>
     <div className="browse-toolbar">
       <span id="result-count">{seats.length}석 <span className="muted">· 빈자리 {seats.filter(seat => seat.occupied === false).length}</span></span>
-      <button className={'text-button' + (selecting ? ' active' : '')} aria-pressed={selecting}
-        disabled={busy || data.running} onClick={() => onSelecting(!selecting)}>
+      {!data.running && <button className={'text-button' + (selecting ? ' active' : '')} aria-pressed={selecting}
+        disabled={busy} onClick={() => onSelecting(!selecting)}>
         <Icon name={selecting ? 'check' : 'list'} />{selecting ? '선택 마치기' : '여러 좌석 선택'}
-      </button>
+      </button>}
     </div>
     {selecting && <div className="selection-guide" role="status"><span>선택한 순서대로 빈자리를 기다립니다.</span>
       <button id="clear-selection" className="text-button" disabled={blocked || !selected.length} onClick={onClear}>선택 해제</button>
     </div>}
-    {data.running && <p className="inline-guide">예약 대기 중입니다. 대기 변경은 내 좌석에서 중지한 뒤 할 수 있어요.</p>}
+    {data.running && <p className="inline-guide">좌석을 눌러 대기에 추가하거나 제외할 수 있어요.</p>}
     {view === 'selected' && selected.length > 0
       ? <ol id="seats" className="selected-list">{visible.map(seat => <li key={seat.key}>
         <span className="priority">{selectedOrder.get(seat.key)}</span>
         <button className="seat-list-button" onClick={() => onInspect(seat.key)}><span><strong>{seat.roomName} · {seat.number}번</strong>
           <small className={seatStatus(seat).className}>{seatStatus(seat).label}</small></span><Icon name="chevron" /></button>
-        {!data.running && <button className="icon-button" aria-label={`${seat.roomName} ${seat.number}번 선택 해제`}
-          disabled={blocked} onClick={() => onToggle(seat.key)}><Icon name="close" /></button>}
+        <button className="icon-button" aria-label={`${seat.roomName} ${seat.number}번 ${data.running ? '대기에서 제외' : '선택 해제'}`}
+          disabled={data.running ? !canAct : blocked} onClick={() => onToggle(seat.key)}><Icon name="close" /></button>
       </li>)}</ol>
       : <div id="seats" className="seat-grid">{[...groups].map(([id, items]) => <section className="room-group" key={id}>
         <div className="room-heading"><h2>{items[0].roomName}</h2><span>빈자리 {totals.get(id) || 0}</span></div>

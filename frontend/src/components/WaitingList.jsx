@@ -1,6 +1,6 @@
 import Icon from './Icon';
 
-export default function WaitingList({ data, selected, busy, reachable, onStop, onSelection }) {
+export default function WaitingList({ data, selected, busy, reachable, onStop, onSelection, onAdd }) {
   const keys = data.running ? data.targets : selected;
   if (!keys.length && !data.running) return null;
   const seats = new Map(data.seats.map(seat => [seat.key, seat]));
@@ -14,7 +14,8 @@ export default function WaitingList({ data, selected, busy, reachable, onStop, o
       const seat = seats.get(key);
       return <li key={key}><span className="priority">{i + 1}</span><strong>{seat ? `${seat.roomName} · ${seat.number}번` : '좌석 정보 확인 중'}</strong><Icon name="clock" /></li>;
     })}</ol>
-    {data.running ? <button id="stop-wait" className="secondary wide" disabled={busy || !reachable}
-      onClick={onStop}>자동 예약 중지</button> : <button className="secondary wide" onClick={onSelection}>선택한 좌석 확인</button>}
+    {data.running ? <div className="waiting-actions"><button id="add-wait-seats" className="secondary" onClick={onAdd}>좌석 추가</button>
+      <button id="stop-wait" className="secondary" disabled={busy || !reachable}
+        onClick={onStop}>자동 예약 중지</button></div> : <button className="secondary wide" onClick={onSelection}>선택한 좌석 확인</button>}
   </section>;
 }

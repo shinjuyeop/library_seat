@@ -304,6 +304,60 @@ class SwitchTests(ServiceFixture):
         self.assertEqual(self.service.snapshot()['reservation']['seatId'], 232003)
         self.assertFalse(self.service.snapshot()['running'])
 
+    def test_live_wait_additions_keep_order_and_held_seat_without_duplicate_targets(self):
+        self.client.reserve(101021)
+        self.service.tick()
+        repeat = self.service.snapshot()['repeat']
+        self.service.set_wait(['232:1'], True)
+        self.client.reserve = Mock(wraps=self.client.reserve)
+        self.client.release = Mock(wraps=self.client.release)
+        self.service.update_wait('107:2', True)
+        self.service.update_wait('107:2', True)
+        state = self.service.snapshot()
+        self.assertEqual(state['targets'], ['232:1', '107:2'])
+        self.assertTrue(state['running'])
+        self.assertEqual(state['reservation']['seatId'], 101021)
+        self.assertEqual(state['repeat'], repeat)
+        self.assertEqual(self.store.load()['targets'], state['targets'])
+        self.client.reserve.assert_not_called()
+        self.client.release.assert_not_called()
+
+    def test_live_wait_removal_works_without_provider_and_last_removal_stops(self):
+        self.service.set_wait(['232:1', '107:2'], True)
+        self.client.reservation = Mock(side_effect=AssertionError('unexpected provider read'))
+        self.client.seats = Mock(side_effect=AssertionError('unexpected provider read'))
+        self.service.update_wait('232:1', False)
+        self.assertEqual(self.service.snapshot()['targets'], ['107:2'])
+        self.assertTrue(self.service.snapshot()['running'])
+        self.service.update_wait('107:2', False)
+        self.assertEqual(self.store.load()['targets'], [])
+        self.assertFalse(self.store.load()['running'])
+
+    def test_live_edit_after_booking_never_restarts_wait_or_releases_assignment(self):
+        self.service.set_wait(['102:3'], True)
+        self.service.tick()
+        held = self.service.snapshot()['reservation']
+        self.client.reserve = Mock()
+        self.client.release = Mock()
+        for enabled in (True, False):
+            with self.assertRaisesRegex(LibraryError, '이미 종료'):
+                self.service.update_wait('232:1', enabled)
+        self.assertFalse(self.service.snapshot()['running'])
+        self.assertEqual(self.service.snapshot()['reservation'], held)
+        self.client.reserve.assert_not_called()
+        self.client.release.assert_not_called()
+
+    def test_live_addition_validates_seat_and_limit_without_losing_targets(self):
+        targets = [f'232:{number}' for number in range(1, 51)]
+        self.service.set_wait(targets, True)
+        with self.assertRaisesRegex(LibraryError, '50개'):
+            self.service.update_wait('232:51', True)
+        self.assertEqual(self.service.snapshot()['targets'], targets)
+        self.service.update_wait('232:1', False)
+        with self.assertRaisesRegex(LibraryError, '좌석 목록'):
+            self.service.update_wait('232:99999', True)
+        self.assertEqual(self.service.snapshot()['targets'], targets[1:])
+
     def test_crash_after_disarm_does_not_repeat_release(self):
         self.wait_with_seat()
         def crash(reservation):
@@ -532,6 +586,19 @@ class ApiTests(ServiceFixture):
         self.assertIsNotNone(self.service.snapshot()['reservation'])
         self.assertEqual(self.browser.get('/api/state').status_code, 401)
 
+    def test_live_wait_endpoint_requires_login_csrf_and_valid_input(self):
+        route = '/api/wait/seat'
+        body = {'key': '232:2', 'enabled': True}
+        self.assertEqual(self.browser.post(route, json=body, headers={'X-CSRF-Token': self.csrf}).status_code, 401)
+        self.login()
+        self.service.set_wait(['232:1'], True)
+        self.assertEqual(self.browser.post(route, json=body).status_code, 403)
+        headers = {'X-CSRF-Token': self.csrf}
+        for invalid in ([], {}, {'key': '232:2', 'enabled': 'true'}, {'key': '999:1', 'enabled': True}):
+            self.assertIn(self.browser.post(route, json=invalid, headers=headers).status_code, (400, 409))
+        self.assertEqual(self.browser.post(route, json=body, headers=headers).status_code, 200)
+        self.assertEqual(self.service.snapshot()['targets'], ['232:1', '232:2'])
+
     def test_bad_input_and_no_credential_leak(self):
         self.login()
         for body in ([], {'targets':['999:1'], 'running':True}, {'targets':['102:3'], 'running':'true'}):
@@ -627,6 +694,29 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(other.snapshot()['reservation']['seatNo'], '3')
         self.assertNotIn('credential', other.snapshot())
         self.assertNotIn('login', other.snapshot())
+
+    def test_live_wait_edits_merge_latest_cloud_state_and_stay_account_scoped(self):
+        alice, bob = self.login(), self.login('bob')
+        alice.set_wait(['232:1'], True)
+        bob.set_wait(['107:1'], True)
+        other = CloudService(alice.store, self.key)
+        other.update_wait('102:2', True)
+        alice.update_wait('232:2', True)
+        self.assertEqual(other.snapshot()['targets'], ['232:1', '102:2', '232:2'])
+        self.assertEqual(bob.snapshot()['targets'], ['107:1'])
+        other.update_wait('232:1', False)
+        self.assertEqual(alice.snapshot()['targets'], ['102:2', '232:2'])
+        self.assertTrue(alice.snapshot()['running'])
+
+    def test_cloud_live_edit_cannot_restart_a_completed_job(self):
+        cloud = self.login()
+        cloud.set_wait(['102:3'], True)
+        cloud.tick()
+        other = CloudService(cloud.store, self.key)
+        with self.assertRaisesRegex(LibraryError, '이미 종료'):
+            other.update_wait('232:1', True)
+        self.assertFalse(cloud.snapshot()['running'])
+        self.assertEqual(cloud.snapshot()['reservation']['seatId'], 102003)
 
     def test_switch_wait_and_manual_repeat_off_survive_second_device_login(self):
         alice = self.login()

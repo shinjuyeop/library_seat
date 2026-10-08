@@ -86,6 +86,11 @@ export default function App() {
   }, []);
   const confirm = (title, message, execute, action = '확인') => setConfirmation({ title, message, execute, action });
   const toggle = useCallback(key => dispatch({ type: 'toggle', key }), [dispatch]);
+  const updateWait = (key, enabled) => mutate('wait/seat', { key, enabled }, {
+    resetSelection: true,
+    message: enabled ? '진행 중인 대기에 추가했습니다.' : '대기에서 제외했습니다.',
+  });
+  const changeSelection = key => data.running ? updateWait(key, !data.targets.includes(key)) : toggle(key);
   const reserve = seat => confirm(data.reservation ? '이 좌석으로 갈아탈까요?' : '이 좌석을 예약할까요?',
     `${seat.roomName} ${seat.number}번을 예약합니다. ${data.reservation
       ? '기존 좌석을 취소·반납하고, 새 좌석 예약에 실패하면 원래 좌석 재예약을 시도합니다. 원래 좌석을 잃을 수 있습니다. ' : ''}
@@ -115,6 +120,11 @@ export default function App() {
     goTo('find');
     if (tab === 'find') pageHeading.current?.scrollIntoView({ block: 'start' });
   };
+  const findMoreSeats = () => {
+    setSelecting(false);
+    setFilters(previous => previous.view === 'selected' ? { ...previous, view: 'all' } : previous);
+    goTo('find');
+  };
   const canAct = data?.connected && reachable && !busy;
   const ready = session?.authorized && data;
   const inspectedSeat = data?.seats.find(seat => seat.key === inspectedKey);
@@ -122,7 +132,7 @@ export default function App() {
     (tab !== 'my' && (data.reservation || data.running || data.repeat)));
   const status = !reachable ? '연결 끊김' : data?.connecting ? '로그인 중' : !data?.connected ? '로그인 필요'
     : data?.error ? '확인 필요' : '연결됨';
-  const waitingList = ready && <WaitingList data={data} selected={selected} busy={busy} reachable={reachable} onSelection={showSelected}
+  const waitingList = ready && <WaitingList data={data} selected={selected} busy={busy} reachable={reachable} onSelection={showSelected} onAdd={findMoreSeats}
     onStop={() => mutate('wait', { targets: data.targets, running: false }, { resetSelection: true })} />;
   return <div className={'app' + (ready ? ' signed-in' : '') + (hasDock ? ' has-dock' : '')}>
     <div className="page">
@@ -146,7 +156,7 @@ export default function App() {
             {!data.connected && !data.demo && tab !== 'settings' && <div className="notice warning">도서관에 다시 연결해 주세요.<button className="text-button" onClick={() => goTo('settings')}>연결 설정</button></div>}
             <div hidden={tab !== 'find'} id="panel-find">
               <SeatBrowser data={data} selected={selected} canAct={canAct} busy={busy} filters={filters} setFilters={setFilters}
-                selecting={selecting} onSelecting={setSelecting} onToggle={toggle} onInspect={setInspectedKey}
+                selecting={selecting && !data.running} onSelecting={setSelecting} onToggle={changeSelection} onInspect={setInspectedKey}
                 onClear={() => dispatch({ type: 'clear-selection' })} />
             </div>
             <div hidden={tab !== 'my'} id="panel-my" className="detail-page">
@@ -176,7 +186,7 @@ export default function App() {
       onSelection={showSelected} onReservation={() => goTo('my')} onWait={startWait} /><Navigation tab={tab} onChange={goTo} /></div>}
     {library.toast && <div id="toast" role="status">{library.toast}</div>}
     {ready && inspectedSeat && <SeatSheet key={inspectedSeat.key} seat={inspectedSeat} data={data} selected={selected} canAct={canAct}
-      onClose={() => setInspectedKey(null)} onReserve={reserve} onWait={startWait} onReservation={() => goTo('my')}
+      onClose={() => setInspectedKey(null)} onReserve={reserve} onWait={startWait} onUpdateWait={updateWait} onReservation={() => goTo('my')}
       onSelect={key => { toggle(key); setSelecting(true); }} />}
     <dialog id="confirm-dialog" ref={dialog} aria-labelledby="confirm-title" onClose={() => setConfirmation(null)}>
       <h2 id="confirm-title">{confirmation?.title}</h2><p>{confirmation?.message}</p>

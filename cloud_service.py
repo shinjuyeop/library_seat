@@ -230,6 +230,9 @@ class CloudService:
     def set_wait(self, targets, running):
         self._execute(lambda worker: worker.set_wait(targets, running))
 
+    def update_wait(self, key, enabled):
+        self._execute(lambda worker: worker.update_wait(key, enabled))
+
     def reserve(self, key):
         self._execute(lambda worker: worker.reserve(key))
 

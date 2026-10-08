@@ -167,7 +167,8 @@ export function useLibrary() {
     patch({ busy: true });
     try {
       await request(path, { body, csrf: session.current?.csrf });
-      if (path === 'reserve' || (path === 'wait' && body.running))
+      if (path === 'reserve' || (path === 'wait' && body.running) ||
+        (path === 'wait/seat' && body.enabled))
         settling.current = { until: Date.now() / 1000 + 15, reservationId: null };
       if (path === 'release' || (path === 'wait' && !body.running) ||
         (path === 'repeat' && !body.enabled))

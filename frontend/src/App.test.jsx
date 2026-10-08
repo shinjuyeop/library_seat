@@ -92,6 +92,11 @@ beforeEach(() => {
       data.running = body.running;
       data.targets = body.targets;
     }
+    if (path === 'wait/seat') {
+      if (!data.running) return response({ error: '대기가 이미 종료되었습니다. 내 좌석을 확인해 주세요.' }, 409);
+      data.targets = body.enabled ? [...new Set([...data.targets, body.key])] : data.targets.filter(key => key !== body.key);
+      data.running = data.targets.length > 0;
+    }
     if (path === 'reserve') {
       data.reservation = {
         id: 'reservation-1',
@@ -188,7 +193,8 @@ describe('React app with the existing account API', () => {
     expect(writes('wait')[0].body).toEqual({ targets: ['107:3', '232:31'], running: true });
     expect(screen.getByRole('heading', { name: '내 좌석', level: 1 })).toBeTruthy();
     fireEvent.click(screen.getByRole('button', { name: '좌석 찾기', exact: true }));
-    expect(screen.getByRole('button', { name: '여러 좌석 선택' }).disabled).toBe(true);
+    expect(screen.queryByRole('button', { name: '여러 좌석 선택' })).toBeNull();
+    expect(screen.getByRole('button', { name: '대기 중 2' })).toBeTruthy();
   });
 
   it('opens seat details without selecting or booking and requires explicit confirmation', async () => {
@@ -250,16 +256,64 @@ describe('React app with the existing account API', () => {
   it('starts a one-seat wait from an occupied seat and closes the sheet', async () => {
     await openApp(); allSeats();
     fireEvent.click(seat('2열람실 31번 1분 상세 보기'));
-    fireEvent.click(screen.getByRole('button', { name: '빈자리 나면 예약' }));
+    fireEvent.click(screen.getByRole('button', { name: '이 좌석 대기 시작' }));
     await screen.findByRole('button', { name: '자동 예약 중지' });
     expect(writes('wait')[0].body).toEqual({ targets: ['232:31'], running: true });
     expect(screen.queryByRole('dialog')).toBeNull();
   });
 
+  it('adds and removes live targets after a one-seat wait without restarting it', async () => {
+    await openApp(); allSeats();
+    fireEvent.click(seat('2열람실 31번 1분 상세 보기'));
+    fireEvent.click(screen.getByRole('button', { name: '이 좌석 대기 시작' }));
+    await screen.findByRole('button', { name: '좌석 추가', exact: true });
+    fireEvent.click(screen.getByRole('button', { name: '좌석 추가', exact: true }));
+    fireEvent.click(seat('5열람실 1번 1분 상세 보기'));
+    fireEvent.click(screen.getByRole('button', { name: '대기에 추가', exact: true }));
+    await screen.findByRole('button', { name: '대기 중 2' });
+    expect(writes('wait')).toHaveLength(1);
+    expect(writes('wait/seat')[0].body).toEqual({ key: '107:1', enabled: true });
+    expect(writes('wait/seat')[0].options.headers['X-CSRF-Token']).toBe('test-csrf');
+    expect(data.targets).toEqual(['232:31', '107:1']);
+    expect(screen.getByRole('heading', { name: '좌석 찾기', level: 1 })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '대기 중 2' }));
+    fireEvent.click(screen.getByRole('button', { name: '2열람실 31번 대기에서 제외' }));
+    await screen.findByRole('button', { name: '대기 중 1' });
+    expect(data.running).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: /5열람실 · 1번/ }));
+    expect(screen.getByText(/제외하면 대기가 종료/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '대기에서 제외', exact: true }));
+    await screen.findByRole('button', { name: '선택한 좌석 0' });
+    expect(data.running).toBe(false);
+    expect(writes('reserve')).toHaveLength(0);
+    expect(writes('release')).toHaveLength(0);
+  });
+
+  it('reports a completed job instead of restarting it from a stale sheet', async () => {
+    data.running = true; data.targets = ['232:31'];
+    await openApp(); allSeats();
+    fireEvent.click(seat('5열람실 1번 1분 상세 보기'));
+    data.running = false; data.targets = [];
+    fireEvent.click(screen.getByRole('button', { name: '대기에 추가', exact: true }));
+    await screen.findByText('대기가 이미 종료되었습니다. 내 좌석을 확인해 주세요.');
+    expect(writes('wait')).toHaveLength(0);
+    expect(data.running).toBe(false);
+  });
+
+  it('blocks live additions when offline and preserves existing wait targets', async () => {
+    data.running = true; data.targets = ['232:31'];
+    await openApp(); allSeats();
+    fireEvent.click(seat('5열람실 1번 1분 상세 보기'));
+    fireEvent(window, new Event('offline'));
+    expect(screen.getByRole('button', { name: '대기에 추가', exact: true }).disabled).toBe(true);
+    expect(writes('wait/seat')).toHaveLength(0);
+    expect(data.targets).toEqual(['232:31']);
+  });
+
   it('adds seats from details to the multiselection draft without starting a job', async () => {
     await openApp();
     fireEvent.click(seat('1열람실 A 1번 1분 상세 보기'));
-    fireEvent.click(screen.getByRole('button', { name: '여러 자리 대기에 추가' }));
+    fireEvent.click(screen.getByRole('button', { name: '여러 좌석 선택에 추가' }));
     expect(screen.getByRole('button', { name: '선택 마치기' })).toBeTruthy();
     expect(seat('1열람실 A 1번 1분 대기 선택').getAttribute('aria-pressed')).toBe('true');
     expect(writes('wait')).toHaveLength(0);
@@ -285,7 +339,7 @@ describe('React app with the existing account API', () => {
     fireEvent.click(seat('2열람실 3번 빈자리 상세 보기'));
     fireEvent(window, new Event('offline'));
     expect(screen.getByRole('button', { name: '이 자리 바로 예약' }).disabled).toBe(true);
-    expect(screen.getByRole('button', { name: '여러 자리 대기에 추가' }).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: '여러 좌석 선택에 추가' }).disabled).toBe(true);
     expect(screen.getByRole('heading', { name: '3번 좌석' })).toBeTruthy();
     expect(writes('reserve')).toHaveLength(0);
   });

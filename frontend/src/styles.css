@@ -148,6 +148,8 @@ label { display: block; font-size: 14px; font-weight: 550; margin: 20px 0 8px; }
 .waiting-list li { min-height: 60px; }
 .waiting-list strong { font-size: 14px; font-weight: 550; }
 .waiting-list svg { margin-left: auto; width: 17px; height: 17px; color: #85968b; }
+.waiting-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.waiting-actions button { padding-inline: 8px; font-size: 14px; }
 .browse-link { width: 100%; display: flex; justify-content: space-between; align-items: center; min-height: 52px; padding: 4px 6px; border: 0; background: none; color: var(--green); font-size: 15px; }
 /* Navigation and a single contextual bar share one dock. */
 .bottom-dock { position: fixed; z-index: 10; left: 50%; bottom: 0; transform: translateX(-50%); width: min(100%,560px); padding: 0 12px max(10px,env(safe-area-inset-bottom)); display: flex; flex-direction: column; gap: 9px; pointer-events: none; }

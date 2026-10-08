@@ -303,6 +303,7 @@ class SeatService:
         if running and not targets:
             raise LibraryError('대기할 좌석을 먼저 선택해 주세요.')
         with self.operation:
+            was_running = self.snapshot()['running']
             if running:
                 if not self.client:
                     raise LibraryError('도서관 계정을 먼저 연결해 주세요.')
@@ -326,7 +327,31 @@ class SeatService:
             self._update(targets=list(dict.fromkeys(targets)), running=running, error=None)
             self._update(interval=self.poll_interval(), nextCheck=time.time())
             self._save()
-            self._event('서버에서 자동 예약을 시작했습니다.' if running else '자동 예약을 중지했습니다.')
+            self._event('대기 좌석을 변경했습니다.' if running and was_running else
+                        '서버에서 자동 예약을 시작했습니다.' if running else '자동 예약을 중지했습니다.')
+            self.wake.set()
+
+    def update_wait(self, key, enabled):
+        """Edit the current job atomically without restarting a completed job."""
+        if not valid_seat_key(key) or type(enabled) is not bool:
+            raise LibraryError('변경할 좌석과 대기 상태를 확인해 주세요.')
+        with self.operation:
+            state = self.snapshot()
+            if not state['running']:
+                raise LibraryError('대기가 이미 종료되었습니다. 내 좌석을 확인해 주세요.')
+            targets = state['targets']
+            if enabled:
+                if key not in targets:
+                    self.set_wait([*targets, key], True)
+                return
+            if key not in targets:
+                return
+            remaining = [target for target in targets if target != key]
+            # Removing a target needs no provider request, even during a read failure.
+            self._update(targets=remaining, running=bool(remaining))
+            self._update(interval=self.poll_interval(), nextCheck=time.time())
+            self._save()
+            self._event('대기에서 좌석을 제외했습니다.' if remaining else '마지막 좌석을 제외해 대기를 종료했습니다.')
             self.wake.set()
 
     def _read_seats(self, room_ids):
