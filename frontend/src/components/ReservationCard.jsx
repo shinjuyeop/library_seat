@@ -48,7 +48,7 @@ export default function ReservationCard({
     <section id="reservation" className="card reservation" ref={cardRef}
       tabIndex={-1} aria-labelledby="reservation-heading">
       <div className="section-heading">
-        <h2 id="reservation-heading">내 좌석</h2>
+        <h2 id="reservation-heading">현재 배정</h2>
         <span
           id="reservation-badge"
           className={
@@ -87,7 +87,7 @@ export default function ReservationCard({
               {temporary
                 ? '제한 시간 안에 현장에서 공식 앱으로 NFC 인증을 완료하세요.'
                 : confirmed
-                  ? '배정 확정'
+                  ? '배정이 확정된 좌석입니다. 종료 시간에 맞춰 이용해 주세요.'
                   : '공식 앱에서 배정 상태를 확인해 주세요.'}
             </p>
             <button
