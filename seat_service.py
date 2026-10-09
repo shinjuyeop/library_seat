@@ -4,6 +4,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import os
 import re
 import sqlite3
 import threading
@@ -24,6 +25,21 @@ MAX_TARGETS = 50
 ACTIVE_STATES = {'TEMP_CHARGE', 'CHARGE', 'IN_USE'}
 TEMP_REPEAT_SECONDS = 9 * 60
 TEMP_DURATION_SECONDS = 10 * 60
+
+
+def configured_nfc_tags():
+    """Room identifiers stay server-side; malformed configuration fails closed."""
+    try:
+        tags = json.loads(os.getenv('LIBRARY_NFC_TAGS', '{}'))
+        if not isinstance(tags, dict) or any(
+            not isinstance(room, str) or not room.isdigit() or int(room) not in ROOMS
+            or not isinstance(tag, str) or not re.fullmatch(r'[0-9a-fA-F]{16}', tag)
+            for room, tag in tags.items()
+        ):
+            return {}
+        return {int(room): tag for room, tag in tags.items()}
+    except (ValueError, TypeError):
+        return {}
 
 
 def reservation_time(value):
@@ -146,6 +162,16 @@ class LibraryClient:
     def reserve(self, seat_id):
         self._request('POST', 'seat-charges', json={'seatId': seat_id, 'smufMethodCode': 'PC'})
 
+    def check_arrival(self, room_id, serial_no):
+        result = self._request('POST', f'rooms/{room_id}/check-arrival',
+                               json={'methodCode': 'RF_TAG', 'serialNo': serial_no})
+        if result is not True:
+            raise LibraryError('열람실 태그 확인에 실패했습니다. 공식 앱에서 NFC 인증을 진행해 주세요.')
+
+    def confirm_reservation(self, reservation_id):
+        self._request('POST', 'seat-charges/' + reservation_id,
+                      params={'smufMethodCode': 'MOBILE', '_method': 'put'})
+
     def release(self, reservation):
         if reservation['state'] == 'TEMP_CHARGE':
             self._request('POST', 'seat-charges/' + reservation['id'],
@@ -177,11 +203,13 @@ class SettingsStore:
 
 
 class SeatService:
-    def __init__(self, store, *, interval=30, client=None, demo=False):
+    def __init__(self, store, *, interval=30, client=None, demo=False, nfc_tags=None):
         self.store = store
         self.interval = max(10, interval)
         self.client = client
         self.demo = demo
+        self.nfc_tags = (nfc_tags if nfc_tags is not None else
+                         {room: '0000000000000000' for room in ROOMS} if demo else configured_nfc_tags())
         self.operation = threading.RLock()
         self.lock = threading.RLock()
         self.wake = threading.Event()
@@ -205,7 +233,7 @@ class SeatService:
 
     def snapshot(self):
         with self.lock:
-            return copy.deepcopy(self.state)
+            return {**copy.deepcopy(self.state), 'confirmationRooms': sorted(self.nfc_tags)}
 
     def _update(self, **kwargs):
         with self.lock:
@@ -692,6 +720,69 @@ class SeatService:
                 self._failure(error)
                 raise
 
+    def confirm(self, expected_id):
+        """Confirm only the caller's current booking, under the same lock as rebooking."""
+        if not isinstance(expected_id, str) or not re.fullmatch(r'[0-9]{1,20}', expected_id):
+            raise LibraryError('배정 정보를 다시 확인해 주세요.')
+        with self.operation:
+            if not self.client:
+                raise LibraryError('도서관 계정을 먼저 연결해 주세요.')
+            try:
+                current = self._read_reservation()
+                self._update(reservation=current, reservationFresh=True)
+                if not current or current['id'] != expected_id:
+                    raise LibraryError('내 좌석이 변경되었습니다. 다시 확인해 주세요.')
+                self._validate_switch_source(current)
+                room = int(current['roomId'])
+                if current['state'] == 'TEMP_CHARGE' and room not in self.nfc_tags:
+                    raise LibraryError('이 열람실의 태그 정보가 아직 없습니다. 공식 앱에서 NFC 인증을 진행해 주세요.')
+
+                # Persist before any write. Crashes or uncertain responses must not revive
+                # rebooking or a switching job and release this seat during confirmation.
+                self._update(repeat=None, running=False, targets=[], error=None,
+                             repeatControl={'observedId': expected_id, 'paused': True})
+                self._save()
+
+                def matches(reservation):
+                    return bool(reservation and reservation['id'] == expected_id
+                                and str(reservation.get('seatId')) == str(current['seatId'])
+                                and str(reservation.get('roomId')) == str(current['roomId']))
+
+                def is_confirmed(reservation):
+                    return matches(reservation) and reservation['state'] in {'CHARGE', 'IN_USE'}
+
+                verified = current
+                if not is_confirmed(current):
+                    self.client.check_arrival(room, self.nfc_tags[room])
+                    # The official app may have changed the booking during arrival checking.
+                    verified = self._read_reservation()
+                    self._update(reservation=verified, reservationFresh=True)
+                    if not matches(verified) or verified['state'] not in ACTIVE_STATES:
+                        raise LibraryError('태그 확인 중 내 좌석이 변경되었습니다. 다시 확인해 주세요.')
+                    if not is_confirmed(verified):
+                        try:
+                            self.client.confirm_reservation(expected_id)
+                        except LibraryError as error:
+                            if not error.uncertain or error.expired:
+                                raise
+                            # Reconcile an ambiguous write once, without replaying it.
+                            verified = self._read_reservation()
+                            self._update(reservation=verified, reservationFresh=True)
+                            if not is_confirmed(verified):
+                                raise LibraryError('배정확정 결과를 확인하지 못했습니다. 자동 재예약과 대기는 중지되었습니다. 새로고침 후 공식 앱에서도 확인해 주세요.', uncertain=True) from None
+                        else:
+                            verified = self._read_reservation()
+                            self._update(reservation=verified, reservationFresh=True)
+                if not is_confirmed(verified):
+                    raise LibraryError('아직 배정확정이 확인되지 않았습니다. 자동 재예약과 대기는 중지되었습니다. 새로고침 후 공식 앱에서도 확인해 주세요.')
+                self._update(reservation=verified, reservationFresh=True, error=None)
+                self._event('배정이 확정되었습니다. 자동 재예약과 갈아타기 대기를 종료했습니다.')
+                self._save()
+                self.wake.set()
+            except LibraryError as error:
+                self._failure(error)
+                raise
+
     def release(self, expected_id, expected_state):
         with self.operation:
             if not self.client:
@@ -765,3 +856,13 @@ class DemoClient:
 
     def release(self, reservation):
         self.current = None
+
+    def check_arrival(self, room_id, serial_no):
+        if not self.current or self.current['roomId'] != room_id:
+            raise LibraryError('데모 좌석이 변경되었습니다.')
+
+    def confirm_reservation(self, reservation_id):
+        if not self.current or self.current['id'] != reservation_id:
+            raise LibraryError('데모 좌석이 변경되었습니다.')
+        self.current.update(state='CHARGE', remainingTime=180,
+                            endTime=(datetime.now(timezone(timedelta(hours=9))) + timedelta(hours=3)).strftime('%Y-%m-%d %H:%M:%S'))

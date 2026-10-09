@@ -12,7 +12,7 @@ export default function Settings({ data, busy, reachable, onDisconnect, onLogout
       </div>
     </section>
     <section className="card help-card" aria-labelledby="guide-heading"><h2 id="guide-heading">이용 안내</h2>
-      <ul><li><strong>임시배정 후 NFC 인증</strong><p>현장에서 공식 도서관 앱으로 인증해야 배정이 확정됩니다.</p></li>
+      <ul><li><strong>도착 후 배정 확정</strong><p>내 좌석의 배정 확정 버튼을 이용하세요. 버튼이 없는 열람실은 공식 앱에서 NFC 인증을 진행해 주세요.</p></li>
         <li><strong>자동 예약은 화면을 닫아도 계속</strong><p>중지하려면 내 좌석에서 대기를 끄세요. 로그아웃해도 대기는 유지됩니다.</p></li>
         <li><strong>자동 재예약은 9분마다</strong><p>임시배정을 취소하고 같은 좌석을 다시 예약합니다. 취소 사이에 자리를 잃을 수 있습니다.</p></li></ul>
     </section>

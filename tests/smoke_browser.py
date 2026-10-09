@@ -95,7 +95,7 @@ def main():
             visible('#reservation')
             assert time.monotonic() - started < 8, 'assignment fell back to slow idle polling'
             wait.until(lambda d: d.execute_script('return document.activeElement.id') == 'reservation')
-            assert 'NFC' in visible('#reservation-badge').text
+            assert '확정 필요' in visible('#reservation-badge').text
             assert visible('#repeat-toggle').get_attribute('aria-checked') == 'true'
             screenshot('ios-my-seat')
 
@@ -181,13 +181,13 @@ def main():
             wait.until(lambda d: '2열람실' in visible('#reservation-seat').text)
             assert service.snapshot()['repeat'], 'switch did not enable repeat'
 
-            # Simulate a server-reported NFC confirmation only in DemoClient.
-            with service.operation:
-                client.current['state'] = 'CHARGE'
-                client.current['endTime'] = '18:30'
-            service.tick()
-            click('#refresh')
+            # Exercise the actual confirmation UI/API against DemoClient only.
+            click('#confirm-allocation')
+            assert '자동 재예약과 갈아타기 대기는 중지' in visible('#confirm-dialog').text
+            screenshot('ios-allocation-confirmation')
+            click('#confirm-dialog .primary')
             wait.until(lambda d: visible('#reservation-badge').text == '배정 확정')
+            assert '배정 확정 완료' in visible('#toast').text
             assert not service.snapshot()['repeat'], 'confirmed assignment kept repeating'
             assert visible('#release').text == '좌석 반납'
             screenshot('ios-confirmed')

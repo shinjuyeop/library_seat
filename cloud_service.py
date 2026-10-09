@@ -11,7 +11,7 @@ import requests
 from cryptography.fernet import Fernet, InvalidToken
 
 from library_login import LoginError, login_to_library
-from seat_service import LibraryClient, LibraryError, SeatService
+from seat_service import LibraryClient, LibraryError, SeatService, configured_nfc_tags
 
 
 class SupabaseStore:
@@ -97,6 +97,7 @@ class CloudService:
         document = self.store.read()
         state = self._empty_state()
         state.update(document.get('state', {}))
+        state['confirmationRooms'] = sorted(configured_nfc_tags())
         state.update(cloud=True, connected=bool(document.get('credential')), autoLogin=bool(document.get('login')), schedulerLastSeen=document.get('schedulerLastSeen'))
         heartbeat = document.get('schedulerLastSeen')
         if (state['running'] or state['repeat']) and (not heartbeat or time.time() - heartbeat > 120):
@@ -235,6 +236,9 @@ class CloudService:
 
     def reserve(self, key):
         self._execute(lambda worker: worker.reserve(key))
+
+    def confirm(self, expected_id):
+        self._execute(lambda worker: worker.confirm(expected_id))
 
     def release(self, expected_id, expected_state):
         self._execute(lambda worker: worker.release(expected_id, expected_state))

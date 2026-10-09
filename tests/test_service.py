@@ -695,6 +695,28 @@ class CloudTests(unittest.TestCase):
         self.assertNotIn('credential', other.snapshot())
         self.assertNotIn('login', other.snapshot())
 
+    def test_confirmation_is_leased_account_scoped_and_keeps_tags_private(self):
+        tag = '0123456789ABCDEF'
+        with patch.dict('os.environ', {'LIBRARY_NFC_TAGS': json.dumps({'102': tag})}):
+            alice, bob = self.login(), self.login('bob')
+            alice.reserve('102:3')
+            bob.reserve('102:3')
+            identifier = alice.snapshot()['reservation']['id']
+            self.assertTrue(alice.store.claim('other-operation'))
+            with self.assertRaises(LibraryError):
+                alice.confirm(identifier)
+            self.assertEqual(self.clients['alice'].current['state'], 'TEMP_CHARGE')
+            alice.store.release('other-operation')
+            alice.confirm(identifier)
+            state = CloudService(alice.store, self.key).snapshot()
+            self.assertEqual(state['reservation']['state'], 'CHARGE')
+            self.assertIsNone(state['repeat'])
+            self.assertEqual(self.clients['bob'].current['state'], 'TEMP_CHARGE')
+            self.assertEqual(state['confirmationRooms'], [102])
+            self.assertNotIn(tag, json.dumps(alice.store.read()))
+        with patch.dict('os.environ', {'LIBRARY_NFC_TAGS': '{}'}):
+            self.assertEqual(alice.snapshot()['confirmationRooms'], [])
+
     def test_live_wait_edits_merge_latest_cloud_state_and_stay_account_scoped(self):
         alice, bob = self.login(), self.login('bob')
         alice.set_wait(['232:1'], True)

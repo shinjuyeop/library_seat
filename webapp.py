@@ -211,6 +211,14 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
         account_service().reserve(body['key'])
         return jsonify(ok=True)
 
+    @app.post('/api/confirm')
+    def confirm():
+        body = request.get_json()
+        if not isinstance(body, dict) or not isinstance(body.get('id'), str) or not re.fullmatch(r'[0-9]{1,20}', body['id']):
+            return jsonify(error='올바른 배정 정보를 지정해 주세요.'), 400
+        account_service().confirm(body['id'])
+        return jsonify(ok=True)
+
     @app.post('/api/release')
     def release():
         body = request.get_json()

@@ -66,6 +66,15 @@ Vercel Production 환경 변수:
 | `LIBRARY_ENCRYPTION_KEY` | Fernet 키. 계정 구분에도 사용하므로 임의 변경 금지 |
 | `CRON_SECRET` | 스케줄 요청 인증용 32자 이상의 무작위 키 |
 | `LIBRARY_WEB_PASSWORD` | 기존 로컬 앱 호환용. 클라우드 로그인에는 사용하지 않음 |
+| `LIBRARY_NFC_TAGS` | 서버 전용 열람실 ID→태그 식별자 JSON. 실제 NFC 성공 기록에서 확인한 열람실만 등록. Secret으로 저장 |
+
+배정 확정은 `내 좌석 → 배정 확정`에서 명시적으로 요청합니다. 현재 확인된 태그는 1열람실 A(102)이며,
+설정이 없는 열람실은 공식 앱 NFC 인증을 안내합니다. iOS 웹앱에서 NFC를 직접 읽는 기능은 아닙니다.
+등록된 태그로 `rooms/{roomId}/check-arrival`의 `RF_TAG` 확인 후 현재 예약에 `MOBILE` 배정확정을 요청합니다.
+같은 예약·좌석·열람실의 `CHARGE` 또는 `IN_USE` 상태를 다시 조회해야 성공으로 표시합니다.
+요청 전에 자동 재예약과 갈아타기 대기를 영구 중지하므로 실패해도 자동으로 재개하지 않습니다.
+통신이 끊기면 확정 요청을 자동 재전송하지 않으며, 공식 앱에서 최종 상태를 확인할 수 있습니다.
+태그 원문과 HAR 파일은 Git·브라우저 응답·로그에 넣지 않습니다. 환경변수 변경 후에는 재배포해야 합니다.
 
 Supabase SQL Editor에서 마이그레이션을 순서대로 적용합니다.
 
@@ -102,7 +111,7 @@ select status_code, timed_out, error_msg, created from net._http_response order 
 npm ci
 npm test
 npm run build
-.venv\Scripts\python.exe -m unittest discover -s tests -p test_service.py -v
+.venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py" -v
 ```
 
 로그인 실패 시 저장 방지, 두 계정의 세션·예약·잠금 분리, 암호화, 인증 만료 후 자동로그인, 잘못된 비밀번호 재시도 중단,

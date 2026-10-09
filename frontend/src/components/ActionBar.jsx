@@ -23,7 +23,7 @@ export default function ActionBar({ data, selected, selecting, tab, busy, reacha
   if (tab === 'my' || (!data.reservation && !data.running && !data.repeat)) return null;
   const reservation = data.reservation;
   const state = !reachable || !data.connected || data.error || !data.reservationFresh ? '상태 확인 필요'
-    : reservation?.state === 'TEMP_CHARGE' ? '임시배정 · NFC 필요'
+    : reservation?.state === 'TEMP_CHARGE' ? '임시배정 · 확정 필요'
       : ['CHARGE', 'IN_USE'].includes(reservation?.state) ? '배정 확정' : '상태 확인 필요';
   return <button className="action-bar mini-bar" aria-label="내 좌석 보기" onClick={onReservation}>
     <span className="mini-icon"><Icon name={reservation ? 'seat' : 'clock'} /></span>

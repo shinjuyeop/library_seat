@@ -40,6 +40,7 @@ const initialData = () => ({
   reservation: null,
   reservationFresh: true,
   repeat: null,
+  confirmationRooms: [102],
   events: [],
   interval: 30,
   cloud: true,
@@ -111,6 +112,12 @@ beforeEach(() => {
     }
     if (path === 'repeat')
       data.repeat = body.enabled ? { dueAt: Date.now() / 1000 + 540 } : null;
+    if (path === 'confirm') {
+      data.reservation = { ...data.reservation, state: 'CHARGE' };
+      data.repeat = null;
+      data.running = false;
+      data.targets = [];
+    }
     if (path === 'release') {
       data.reservation = null;
       data.repeat = null;
@@ -208,7 +215,7 @@ describe('React app with the existing account API', () => {
     fireEvent.click(seat('2열람실 3번 빈자리 상세 보기'));
     fireEvent.click(screen.getByRole('button', { name: '이 자리 바로 예약' }));
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '예약하기' }));
-    await screen.findByText('임시배정 · NFC 필요');
+    await screen.findByText('임시배정 · 확정 필요');
     expect(writes('reserve')).toHaveLength(1);
     expect(writes('reserve')[0].body).toEqual({ key: '232:3' });
     expect(writes('reserve')[0].options.headers['X-CSRF-Token']).toBe('test-csrf');
@@ -366,6 +373,70 @@ describe('React app with the existing account API', () => {
     expect(writes('wait')).toHaveLength(0);
     expect(screen.queryByRole('navigation')).toBeNull();
     expect(screen.queryByRole('heading', { name: '좌석 찾기' })).toBeNull();
+  });
+});
+
+describe('allocation confirmation', () => {
+  beforeEach(() => {
+    data.reservation = { id: '123', roomId: 102, seatId: 102003, seatNo: '3', roomName: '1열람실 A', state: 'TEMP_CHARGE' };
+    data.repeat = { reservationId: '123', dueAt: Date.now() / 1000 + 540 };
+  });
+
+  const mySeat = async () => {
+    await openApp();
+    fireEvent.click(screen.getByRole('button', { name: '내 좌석', exact: true }));
+  };
+
+  it('requires explicit confirmation and only announces the returned confirmed state', async () => {
+    await mySeat();
+    expect(screen.queryByText(/배정 확정 완료/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: '배정 확정', exact: true }));
+    expect(screen.getByRole('dialog').textContent).toContain('자동 재예약과 갈아타기 대기는 중지');
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '취소' }));
+    expect(writes('confirm')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: '배정 확정', exact: true }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '배정 확정' }));
+    await waitFor(() => expect(document.getElementById('reservation-badge').textContent).toBe('배정 확정'));
+    expect(document.getElementById('toast').textContent).toBe('배정 확정 완료 · 1열람실 A 3번');
+    expect(writes('confirm')).toHaveLength(1);
+    expect(writes('confirm')[0].body).toEqual({ id: '123' });
+    expect(writes('confirm')[0].options.headers['X-CSRF-Token']).toBe('test-csrf');
+    expect(screen.queryByRole('switch')).toBeNull();
+    expect(screen.getByRole('button', { name: '좌석 반납' })).toBeTruthy();
+    expect(writes('release')).toHaveLength(0);
+  });
+
+  it.each([false, true])('never pretends a still-temporary response is confirmed (rejected=%s)', async rejected => {
+    await mySeat();
+    const original = fakeFetch.getMockImplementation();
+    fakeFetch.mockImplementation((url, options) => url === '/api/confirm'
+      ? response(rejected ? { error: '태그 확인에 실패했습니다.' } : { ok: true }, rejected ? 409 : 200)
+      : original(url, options));
+    fireEvent.click(screen.getByRole('button', { name: '배정 확정', exact: true }));
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '배정 확정' }));
+    await waitFor(() => expect(screen.getByRole('button', { name: '배정 확정', exact: true }).disabled).toBe(false));
+    expect(document.getElementById('reservation-badge').textContent).toBe('임시배정 · 확정 필요');
+    expect(screen.queryByText(/배정 확정 완료/)).toBeNull();
+    if (rejected) expect(document.getElementById('toast').textContent).toBe('태그 확인에 실패했습니다.');
+  });
+
+  it('disables confirmation for stale and offline state', async () => {
+    data.reservationFresh = false;
+    await mySeat();
+    expect(screen.getByRole('button', { name: '배정 확정' }).disabled).toBe(true);
+    data.reservationFresh = true;
+    fireEvent(window, new Event('focus'));
+    await waitFor(() => expect(screen.getByRole('button', { name: '배정 확정' }).disabled).toBe(false));
+    fireEvent(window, new Event('offline'));
+    expect(screen.getByRole('button', { name: '배정 확정' }).disabled).toBe(true);
+    expect(writes('confirm')).toHaveLength(0);
+  });
+
+  it('offers official app guidance for rooms without a configured tag', async () => {
+    data.confirmationRooms = [];
+    await mySeat();
+    expect(screen.queryByRole('button', { name: '배정 확정' })).toBeNull();
+    expect(screen.getByText('이 열람실은 현장에서 공식 앱으로 NFC 인증을 진행해 주세요.')).toBeTruthy();
   });
 });
 

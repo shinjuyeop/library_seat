@@ -38,12 +38,14 @@ export default function ReservationCard({
   reachable,
   onRelease,
   onRepeat,
+  onConfirm,
 }) {
   const { reservation, reservationFresh, repeat } = data;
   if (!reservation && !repeat) return null;
   const temporary = reservation?.state === 'TEMP_CHARGE';
   const confirmed = ['CHARGE', 'IN_USE'].includes(reservation?.state);
   const canAct = data.connected && reachable && !busy;
+  const confirmationAvailable = data.confirmationRooms?.some(room => String(room) === String(reservation?.roomId));
   return (
     <section id="reservation" className="card reservation" ref={cardRef}
       tabIndex={-1} aria-labelledby="reservation-heading">
@@ -58,7 +60,7 @@ export default function ReservationCard({
           {!reservationFresh
             ? '마지막 조회 정보'
             : temporary
-              ? '임시배정 · NFC 필요'
+              ? '임시배정 · 확정 필요'
               : confirmed
                 ? '배정 확정'
                 : '상태 확인 필요'}
@@ -66,7 +68,7 @@ export default function ReservationCard({
       </div>
       {notice && notice.id === reservation?.id && reservationFresh && (
         <p id="reservation-result" className="reservation-result">
-          {notice.message.startsWith('자동 재예약') ? '자동 재예약 완료' : '배정 완료'}
+          {notice.message.split(' · ')[0]}
           {' · '}{timeLabel(notice.at, true)} 확인
         </p>
       )}
@@ -85,11 +87,17 @@ export default function ReservationCard({
           <div className="reservation-bottom">
             <p className="fine">
               {temporary
-                ? '제한 시간 안에 현장에서 공식 앱으로 NFC 인증을 완료하세요.'
+                ? confirmationAvailable
+                  ? '도서관에 도착했다면 제한 시간 안에 배정을 확정해 주세요.'
+                  : '이 열람실은 현장에서 공식 앱으로 NFC 인증을 진행해 주세요.'
                 : confirmed
                   ? '배정이 확정된 좌석입니다. 종료 시간에 맞춰 이용해 주세요.'
                   : '공식 앱에서 배정 상태를 확인해 주세요.'}
             </p>
+            {temporary && confirmationAvailable && <button id="confirm-allocation" className="primary"
+              disabled={!canAct || !reservationFresh} onClick={() => onConfirm(reservation)}>
+              배정 확정
+            </button>}
             <button
               id="release"
               className="secondary"
@@ -130,7 +138,7 @@ export default function ReservationCard({
             </button>
           </div>
           <p className="repeat-note">
-            서버에서 실행 · NFC 인증 시 종료
+            서버에서 실행 · 배정 확정 시 종료
             <br />
             취소 직후 다른 사람이 예약하면 자리를 잃을 수 있습니다.
           </p>

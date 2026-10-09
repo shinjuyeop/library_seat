@@ -23,7 +23,7 @@ export default function SeatSheet({ seat, data, selected, canAct, onClose, onRes
       <p className="sheet-description">{own ? '내 좌석에서 배정 상태와 남은 시간을 확인하세요.' : data.running
         ? waiting ? data.targets.length === 1 ? '이 좌석을 기다리고 있습니다. 제외하면 대기가 종료됩니다.' : '이 좌석을 기다리고 있습니다. 제외해도 다른 좌석의 대기는 계속됩니다.'
           : full ? '최대 50개 좌석까지 대기할 수 있습니다.' : '진행 중인 대기에 추가합니다. 한 자리가 예약되면 전체 대기가 끝납니다.' : status.free
-          ? data.reservation ? '현재 좌석을 반납하고 이 자리로 옮깁니다.' : '예약 후 현장에서 공식 앱으로 NFC 인증을 완료하세요.'
+          ? data.reservation ? '현재 좌석을 반납하고 이 자리로 옮깁니다.' : '예약 후 도서관 현장에서 배정을 확정해 주세요.'
           : '자리가 비면 자동으로 예약합니다. 화면을 닫아도 대기는 계속됩니다.'}</p>
       {seat.checkedAt && <p className="fine">{timeLabel(seat.checkedAt)} 조회 · 실행 전에 상태를 다시 확인합니다.</p>}
       <div className="sheet-actions">
