@@ -80,6 +80,34 @@ def main():
             no_overflow()
             assert driver.execute_script('return getComputedStyle(document.querySelector("#seat-search")).fontSize') == '16px'
             screenshot('ios-find')
+            # Room overview, scoped search and native history keep selection context.
+            click('[data-view="all"]')
+            visible('#room-overview')
+            assert len(driver.find_elements(By.CSS_SELECTOR, '.room-card')) == 6
+            assert not driver.find_elements(By.CSS_SELECTOR, '.seat-cell')
+            for width in (320, 390):
+                mobile(width)
+                no_overflow()
+                screenshot(f'ios-room-overview-{width}')
+            click('#room-card-234')
+            visible('#room-detail-heading')
+            assert visible('#room-detail-heading').text == '3열람실 B'
+            assert len(driver.find_elements(By.CSS_SELECTOR, '.room-group')) == 1
+            assert driver.execute_script('return document.activeElement.id') == 'room-detail-heading'
+            query('3')
+            screenshot('ios-room-seats')
+            click('#back-to-rooms')
+            visible('#room-overview')
+            assert driver.execute_script('return document.activeElement.id') == 'room-card-234'
+            driver.forward()
+            visible('#room-detail-heading')
+            assert visible('#seat-search').get_attribute('value') == '3'
+            tab('my')
+            driver.back()
+            visible('#room-overview')
+            assert driver.find_element(By.ID, 'nav-find').get_attribute('aria-current') == 'page'
+            assert driver.execute_script('return document.activeElement.id') == 'room-card-234'
+            click('[data-view="single"]')
             free_seat = '.seat-cell[aria-label="1열람실 A 3번 빈자리 상세 보기"]'
             click(free_seat)
             visible('#seat-sheet')
@@ -274,6 +302,10 @@ def main():
             driver.execute_script('window.scrollTo(0, 0)')
             no_overflow()
             screenshot('desktop')
+            click('[data-view="all"]')
+            visible('#room-overview')
+            no_overflow()
+            screenshot('desktop-room-overview')
             errors = [entry for entry in driver.get_log('browser') if entry['level'] == 'SEVERE']
             assert not errors, json.dumps(errors)
             print('PASS: mobile/desktop layout, search, tabs, booking, repeat, live waiting edits, manual switching, confirmation, return-reassign-confirm, automatic recovery+confirmation+resumed waiting, automatic switch+confirmation, release; no browser errors')

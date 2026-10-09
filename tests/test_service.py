@@ -695,6 +695,22 @@ class CloudTests(unittest.TestCase):
         self.assertNotIn('credential', other.snapshot())
         self.assertNotIn('login', other.snapshot())
 
+    def test_cloud_filters_old_catalogs_and_targets_before_next_refresh(self):
+        cloud = self.login()
+        document = cloud.store.accounts[cloud.store.account]
+        document['state'].update(seats=[{'key': '101:409'}, {'key': '234:149'}, {'key': '101:408'}],
+                                 targets=['101:409', '234:149'], running=True)
+        state = cloud.snapshot()
+        self.assertEqual(state['seats'], [{'key': '101:408'}])
+        self.assertEqual(state['targets'], [])
+        self.assertFalse(state['running'])
+        client = self.clients['alice']
+        client.reserve = Mock()
+        cloud.tick()
+        self.assertFalse(cloud.store.read()['state']['running'])
+        self.assertEqual(cloud.store.read()['state']['targets'], [])
+        client.reserve.assert_not_called()
+
     def test_confirmation_is_leased_account_scoped_and_keeps_tags_private(self):
         tag = '0123456789ABCDEF'
         with patch.dict('os.environ', {'LIBRARY_NFC_TAGS': json.dumps({'102': tag})}):

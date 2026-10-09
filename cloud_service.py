@@ -11,7 +11,7 @@ import requests
 from cryptography.fernet import Fernet, InvalidToken
 
 from library_login import LoginError, login_to_library
-from seat_service import LibraryClient, LibraryError, SeatService, configured_nfc_tags
+from seat_service import LibraryClient, LibraryError, SeatService, configured_nfc_tags, sanitize_seat_catalog
 
 
 class SupabaseStore:
@@ -97,6 +97,7 @@ class CloudService:
         document = self.store.read()
         state = self._empty_state()
         state.update(document.get('state', {}))
+        sanitize_seat_catalog(state)
         state['confirmationRooms'] = sorted(configured_nfc_tags())
         state.update(cloud=True, connected=bool(document.get('credential')), autoLogin=bool(document.get('login')), schedulerLastSeen=document.get('schedulerLastSeen'))
         heartbeat = document.get('schedulerLastSeen')
@@ -144,6 +145,7 @@ class CloudService:
             document = self.store.read()
             state = self._empty_state()
             state.update(document.get('state', {}))
+            sanitize_seat_catalog(state)
             client = None
             if document.get('credential') and not credentials and not discard_credentials:
                 credential = self._decrypt(document['credential'])

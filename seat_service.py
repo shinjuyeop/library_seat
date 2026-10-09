@@ -25,6 +25,7 @@ MAX_TARGETS = 50
 ACTIVE_STATES = {'TEMP_CHARGE', 'CHARGE', 'IN_USE'}
 TEMP_REPEAT_SECONDS = 9 * 60
 TEMP_DURATION_SECONDS = 10 * 60
+UNAVAILABLE_3B_SEATS = {149, 150, 207, 279, 325, 326, 347, 348}
 
 
 def configured_nfc_tags():
@@ -57,7 +58,18 @@ def valid_seat_key(key):
     if not isinstance(key, str) or not re.fullmatch(r'\d{1,6}:\d{1,6}', key):
         return False
     room, number = key.split(':')
-    return int(room) in ROOMS and int(number) > 0
+    room, number = int(room), int(number)
+    return (room in ROOMS and number > 0
+            and not (room == 101 and number > 408)
+            and not (room == 234 and number in UNAVAILABLE_3B_SEATS))
+
+
+def sanitize_seat_catalog(state):
+    """Also filter persisted catalogs before their next provider refresh."""
+    state['seats'] = [seat for seat in state.get('seats', []) if valid_seat_key(seat.get('key'))]
+    state['targets'] = [key for key in state.get('targets', []) if valid_seat_key(key)]
+    state['running'] = bool(state.get('running') and state['targets'])
+    return state
 
 
 class LibraryError(Exception):
@@ -230,10 +242,11 @@ class SeatService:
             'message': '도서관 계정을 연결해 주세요.' if not client else '좌석 현황을 확인하고 있습니다.',
             'events': [], 'demo': demo, 'interval': self.interval,
         }
+        sanitize_seat_catalog(self.state)
 
     def snapshot(self):
         with self.lock:
-            return {**copy.deepcopy(self.state), 'confirmationRooms': sorted(self.nfc_tags)}
+            return {**sanitize_seat_catalog(copy.deepcopy(self.state)), 'confirmationRooms': sorted(self.nfc_tags)}
 
     def _update(self, **kwargs):
         with self.lock:
@@ -485,6 +498,7 @@ class SeatService:
         started = reservation.get('startedAt')
         seat_id, room_id = reservation.get('seatId'), reservation.get('roomId')
         if (not str(seat_id).isdigit() or not str(room_id).isdigit() or int(room_id) not in ROOMS
+                or not valid_seat_key(f"{room_id}:{reservation.get('seatNo')}")
                 or not isinstance(started, (int, float)) or not math.isfinite(started)
                 or started > time.time() + 5 or time.time() >= started + TEMP_DURATION_SECONDS):
             raise LibraryError('임시배정 시간이나 좌석 정보를 확인할 수 없습니다. 새로고침 후 다시 시도해 주세요.')
@@ -547,7 +561,8 @@ class SeatService:
         repeat = self.snapshot()['repeat']
         if not repeat:
             return
-        if not self._repeat_matches(reservation, repeat) or time.time() >= repeat['expiresAt']:
+        if (not self._repeat_matches(reservation, repeat) or time.time() >= repeat['expiresAt']
+                or not valid_seat_key(f"{reservation.get('roomId')}:{reservation.get('seatNo')}")):
             self._update(repeat=None, repeatControl={'observedId': reservation['id'] if reservation else None, 'paused': False})
             self._save()
             self._event('배정 상태가 바뀌었거나 시간이 지나 자동 재예약을 종료했습니다.')
@@ -557,7 +572,8 @@ class SeatService:
         # Recheck at the write boundary: never cancel a confirmed or replacement reservation.
         current = self._read_reservation()
         self._update(reservation=current, reservationFresh=True)
-        if not self._repeat_matches(current, repeat) or time.time() >= repeat['expiresAt']:
+        if (not self._repeat_matches(current, repeat) or time.time() >= repeat['expiresAt']
+                or not valid_seat_key(f"{current.get('roomId')}:{current.get('seatNo')}")):
             self._update(repeat=None, repeatControl={'observedId': current['id'] if current else None, 'paused': False})
             self._save()
             self._event('내 좌석 상태가 변경되어 자동 재예약을 종료했습니다.')
@@ -655,6 +671,7 @@ class SeatService:
     @staticmethod
     def _validate_switch_source(reservation):
         if (reservation['state'] not in ACTIVE_STATES
+                or not valid_seat_key(f"{reservation.get('roomId')}:{reservation.get('seatNo')}")
                 or not str(reservation.get('seatId')).isdigit()
                 or not str(reservation.get('roomId')).isdigit()
                 or int(reservation['roomId']) not in ROOMS):
@@ -826,7 +843,7 @@ class SeatService:
                 if not current or current['id'] != expected_id or current['state'] not in {'CHARGE', 'IN_USE'}:
                     raise LibraryError('확정된 내 좌석이 변경되었습니다. 다시 확인해 주세요.')
                 if (not str(current.get('seatId')).isdigit() or not str(current.get('roomId')).isdigit()
-                        or int(current['roomId']) not in ROOMS):
+                        or not valid_seat_key(f"{current.get('roomId')}:{current.get('seatNo')}")):
                     raise LibraryError('현재 좌석 정보를 확인할 수 없어 반납하지 않았습니다.')
                 if int(current['roomId']) not in self.nfc_tags:
                     raise LibraryError('이 열람실은 자동 배정확정을 지원하지 않아 반납하지 않았습니다.')

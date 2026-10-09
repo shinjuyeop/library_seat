@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useLibrary } from './useLibrary';
+import useSeatNavigation, { defaultFilters } from './useSeatNavigation';
 import LoginForm, { ConnectionCard } from './components/LoginForm';
 import ReservationCard from './components/ReservationCard';
 import SeatBrowser from './components/SeatBrowser';
@@ -10,13 +11,11 @@ import Settings from './components/Settings';
 import Icon from './components/Icon';
 
 const titles = { find: '좌석 찾기', my: '내 좌석', settings: '설정' };
-const defaultFilters = { view: 'single', room: 'all', query: '', freeOnly: false, limit: 120 };
 
 export default function App() {
   const library = useLibrary();
   const { session, data, selected, reachable, busy, dispatch, mutate } = library;
   const [tab, setTab] = useState('find');
-  const [filters, setFilters] = useState(defaultFilters);
   const [selecting, setSelecting] = useState(false);
   const [inspectedKey, setInspectedKey] = useState(null);
   const [confirmation, setConfirmation] = useState(null);
@@ -36,6 +35,14 @@ export default function App() {
       pageHeading.current?.focus({ preventScroll: true });
     }
   }, [tab]);
+  const { filters, setFilters, openRoom, backToRooms } = useSeatNavigation({
+    active: tab === 'find', onNavigate: () => {
+      setInspectedKey(null);
+      dialog.current?.close();
+      setConfirmation(null);
+      goTo('find');
+    },
+  });
   useEffect(() => {
     const notice = library.reservationNotice;
     if (!notice || notice.message.startsWith('자동 재예약')) return;
@@ -55,7 +62,7 @@ export default function App() {
     if (confirmation && !dialog.current?.open) dialog.current?.showModal();
   }, [confirmation]);
   useEffect(() => {
-    if (!session?.authorized) {
+    if (session && !session.authorized) {
       dialog.current?.close();
       setConfirmation(null);
       setInspectedKey(null);
@@ -162,6 +169,7 @@ export default function App() {
             {!data.connected && !data.demo && tab !== 'settings' && <div className="notice warning">도서관에 다시 연결해 주세요.<button className="text-button" onClick={() => goTo('settings')}>연결 설정</button></div>}
             <div hidden={tab !== 'find'} id="panel-find">
               <SeatBrowser data={data} selected={selected} canAct={canAct} busy={busy} filters={filters} setFilters={setFilters}
+                onOpenRoom={openRoom} onBackToRooms={backToRooms}
                 selecting={selecting && !data.running} onSelecting={setSelecting} onToggle={changeSelection} onInspect={setInspectedKey}
                 onClear={() => dispatch({ type: 'clear-selection' })} />
             </div>

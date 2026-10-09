@@ -1,6 +1,7 @@
 import { memo, useMemo, useRef } from 'react';
 import { filterSeats, seatStatus, timeLabel } from '../model';
 import Icon from './Icon';
+import RoomOverview from './RoomOverview';
 
 const Seat = memo(function Seat({ seat, order, selecting, own, disabled, onInspect, onToggle }) {
   const status = seatStatus(seat), chosen = order > 0;
@@ -16,9 +17,12 @@ const Seat = memo(function Seat({ seat, order, selecting, own, disabled, onInspe
 });
 
 export default function SeatBrowser({ data, selected, canAct, busy, filters, setFilters,
-  selecting, onSelecting, onToggle, onInspect, onClear }) {
+  selecting, onSelecting, onToggle, onInspect, onClear, onOpenRoom, onBackToRooms }) {
   const searchRef = useRef(null);
   const { view, room, query, freeOnly, limit } = filters;
+  const overview = view === 'all' && room === 'all' && !query.trim();
+  const roomDetail = view === 'all' && room !== 'all';
+  const roomName = data.rooms.find(item => String(item.id) === room)?.name;
   const seats = useMemo(() => filterSeats(data.seats, { view, room, query, freeOnly, selected }),
     [data.seats, view, room, query, freeOnly, selected]);
   const visible = seats.slice(0, limit);
@@ -39,7 +43,7 @@ export default function SeatBrowser({ data, selected, canAct, busy, filters, set
     own={!!data.reservation && data.reservation.roomName === seat.roomName && data.reservation.seatNo === seat.number} />;
   return <section className="seat-browser" aria-label="좌석 탐색">
     <div className="search-box"><Icon name="search" />
-      <input id="seat-search" type="search" ref={searchRef} placeholder="좌석 번호 또는 열람실 검색"
+      <input id="seat-search" type="search" ref={searchRef} placeholder={roomDetail ? `${roomName} 좌석 검색` : '좌석 번호 또는 열람실 검색'}
         aria-label="좌석 번호 또는 열람실 검색" autoComplete="off" autoCapitalize="none"
         spellCheck={false} enterKeyHint="search" value={query}
         onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }}
@@ -50,32 +54,37 @@ export default function SeatBrowser({ data, selected, canAct, busy, filters, set
     <div className="view-tabs" role="group" aria-label="좌석 목록">
       {[['single', '1인석'], ['all', '전체 좌석'], ['selected', data.running ? '대기 중' : '선택한 좌석']].map(([key, label]) =>
         <button key={key} data-view={key} aria-pressed={view === key} className={view === key ? 'active' : ''}
-          onClick={() => change({ view: key, ...(key === 'selected' ? { query: '', room: 'all', freeOnly: false } : {}) })}>
+          onClick={() => change({ view: key, query: '', room: 'all', freeOnly: false })}>
           {label}{key === 'selected' && <> <span id="selected-tab-count">{selected.length}</span></>}
         </button>)}
     </div>
-    <div className="filters">
-      <label className="select-label" htmlFor="room-filter"><span className="sr-only">열람실</span>
+    {view === 'all' && !overview && <div className="room-detail-nav">
+      <button id="back-to-rooms" className="room-back" onClick={onBackToRooms}><Icon name="back" />열람실 목록</button>
+      <h2 id="room-detail-heading" tabIndex={-1}>{roomDetail ? roomName : '검색 결과'}</h2>
+    </div>}
+    {!overview && <div className={'filters' + (view === 'all' ? ' room-seat-filters' : '')}>
+      {view !== 'all' && <label className="select-label" htmlFor="room-filter"><span className="sr-only">열람실</span>
         <select id="room-filter" value={room} onChange={event => change({ room: event.target.value,
           view: view === 'single' && !['all', '102', '101'].includes(event.target.value) ? 'all' : view })}>
           <option value="all">모든 열람실</option>
           {data.rooms.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}
         </select>
-      </label>
+      </label>}
       <label className="filter-check"><input id="free-only" type="checkbox" checked={freeOnly}
         onChange={event => change({ freeOnly: event.target.checked })} /><span>빈자리만</span></label>
-    </div>
+    </div>}
     <div className="browse-toolbar">
-      <span id="result-count">{seats.length}석 <span className="muted">· 빈자리 {seats.filter(seat => seat.occupied === false).length}</span></span>
+      <span id="result-count">{overview ? `${data.rooms.length}개 열람실` : `${seats.length}석`} <span className="muted">· 빈자리 {overview && !data.seats.length ? '—' : seats.filter(seat => seat.occupied === false).length}</span></span>
       {!data.running && <button className={'text-button' + (selecting ? ' active' : '')} aria-pressed={selecting}
         disabled={busy} onClick={() => onSelecting(!selecting)}>
         <Icon name={selecting ? 'check' : 'list'} />{selecting ? '선택 마치기' : '여러 좌석 선택'}
       </button>}
     </div>
-    {selecting && <div className="selection-guide" role="status"><span>선택한 순서대로 빈자리를 기다립니다.</span>
+    {selecting && !overview && <div className="selection-guide" role="status"><span>선택한 순서대로 빈자리를 기다립니다.</span>
       <button id="clear-selection" className="text-button" disabled={blocked || !selected.length} onClick={onClear}>선택 해제</button>
     </div>}
-    {data.running && <p className="inline-guide">좌석을 눌러 대기에 추가하거나 제외할 수 있어요.</p>}
+    {data.running && !overview && <p className="inline-guide">좌석을 눌러 대기에 추가하거나 제외할 수 있어요.</p>}
+    {overview ? <RoomOverview data={data} onOpen={onOpenRoom} /> : <>
     {view === 'selected' && selected.length > 0
       ? <ol id="seats" className="selected-list">{visible.map(seat => <li key={seat.key}>
         <span className="priority">{selectedOrder.get(seat.key)}</span>
@@ -85,7 +94,7 @@ export default function SeatBrowser({ data, selected, canAct, busy, filters, set
           disabled={data.running ? !canAct : blocked} onClick={() => onToggle(seat.key)}><Icon name="close" /></button>
       </li>)}</ol>
       : <div id="seats" className="seat-grid">{[...groups].map(([id, items]) => <section className="room-group" key={id}>
-        <div className="room-heading"><h2>{items[0].roomName}</h2><span>빈자리 {totals.get(id) || 0}</span></div>
+        {!roomDetail && <div className="room-heading"><h2>{items[0].roomName}</h2><span>빈자리 {totals.get(id) || 0}</span></div>}
         <div className="number-grid">{items.map(seatButton)}</div>
       </section>)}</div>}
     {seats.length === 0 && <div id="empty-seats" className="empty"><Icon name="search" />
@@ -96,6 +105,6 @@ export default function SeatBrowser({ data, selected, canAct, busy, filters, set
     </div>}
     {visible.length < seats.length && <button id="load-more" className="load-more" onClick={() => setFilters(p => ({ ...p, limit: p.limit + 120 }))}>더 보기 · {visible.length} / {seats.length}</button>}
     <div className="browse-footnote"><span><i className="dot free" />빈자리</span><span><i className="dot occupied" />사용 중 · 남은 분</span>
-      <span id="updated">{timestamps.length ? timeLabel(Math.min(...timestamps)) + ' 조회' : '조회 전'}</span></div>
+      <span id="updated">{timestamps.length ? timeLabel(Math.min(...timestamps)) + ' 조회' : '조회 전'}</span></div></>}
   </section>;
 }

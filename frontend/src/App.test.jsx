@@ -56,6 +56,7 @@ const response = (data, status = 200) => ({
 let data, signedIn, requests, fakeFetch;
 
 beforeEach(() => {
+  window.history.replaceState(null, '');
   data = initialData();
   signedIn = true;
   requests = [];
@@ -146,10 +147,13 @@ const openApp = async () => {
   );
   await screen.findByRole('heading', { name: '좌석 찾기' });
 };
-const allSeats = () =>
+const allSeats = () => {
   fireEvent.click(
     screen.getByRole('button', { name: '전체 좌석', exact: true }),
   );
+  // Grid interactions below use global search; room-directory flows are tested separately.
+  fireEvent.change(screen.getByRole('searchbox'), { target: { value: '열람실' } });
+};
 const seat = (name) => screen.getByRole('button', { name });
 const writes = (path) =>
   requests.filter(
@@ -157,6 +161,93 @@ const writes = (path) =>
   );
 
 describe('React app with the existing account API', () => {
+  it('shows room availability first and supports room back and browser forward', async () => {
+    await openApp();
+    fireEvent.click(screen.getByRole('button', { name: '전체 좌석', exact: true }));
+    expect(document.querySelectorAll('.room-card')).toHaveLength(3);
+    expect(document.querySelector('.seat-cell')).toBeNull();
+    const card = seat('2열람실 좌석 보기');
+    expect(card.textContent).toContain('사용 3 / 전체 4');
+    expect(card.querySelector('.ring-label strong').textContent).toBe('1');
+    fireEvent.click(card);
+    expect(document.querySelectorAll('.seat-cell')).toHaveLength(4);
+    expect(document.querySelectorAll('.room-group')).toHaveLength(1);
+    expect(document.activeElement.id).toBe('room-detail-heading');
+    expect(screen.getByRole('heading', { name: '2열람실' })).toBeTruthy();
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: '3' } });
+    expect(document.querySelectorAll('.seat-cell')).toHaveLength(3);
+    fireEvent.click(screen.getByRole('button', { name: '내 좌석', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: '좌석 찾기', exact: true }));
+    expect(screen.getByRole('searchbox').value).toBe('3');
+    expect(document.querySelectorAll('.room-group')).toHaveLength(1);
+    fireEvent.click(screen.getByRole('button', { name: '열람실 목록' }));
+    await screen.findByRole('button', { name: '2열람실 좌석 보기' });
+    expect(document.activeElement.id).toBe('room-card-232');
+    act(() => window.history.forward());
+    await screen.findByRole('heading', { name: '2열람실' });
+    expect(screen.getByRole('searchbox').value).toBe('3');
+    fireEvent.click(screen.getByRole('button', { name: '설정', exact: true }));
+    act(() => window.history.back());
+    await screen.findByRole('button', { name: '2열람실 좌석 보기' });
+    expect(screen.getByRole('heading', { name: '좌석 찾기', level: 1 })).toBeTruthy();
+    expect(document.activeElement.id).toBe('room-card-232');
+    expect(writes('reserve')).toHaveLength(0);
+  });
+
+  it('keeps ordered selections while moving between room cards', async () => {
+    await openApp();
+    fireEvent.click(screen.getByRole('button', { name: '전체 좌석', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: '여러 좌석 선택' }));
+    fireEvent.click(seat('5열람실 좌석 보기'));
+    fireEvent.click(seat('5열람실 31번 1분 대기 선택'));
+    fireEvent.click(screen.getByRole('button', { name: '열람실 목록' }));
+    fireEvent.click(await screen.findByRole('button', { name: '2열람실 좌석 보기' }));
+    fireEvent.click(seat('2열람실 1번 1분 대기 선택'));
+    fireEvent.click(screen.getByRole('button', { name: '선택한 좌석 2' }));
+    const selected = [...document.querySelectorAll('.seat-list-button')];
+    expect(selected[0].textContent).toContain('5열람실 · 31번');
+    expect(selected[1].textContent).toContain('2열람실 · 1번');
+    expect(writes('wait')).toHaveLength(0);
+  });
+
+  it('searches across all rooms from the directory and returns when cleared', async () => {
+    await openApp();
+    fireEvent.click(screen.getByRole('button', { name: '전체 좌석', exact: true }));
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: '3' } });
+    expect(document.querySelectorAll('.room-group')).toHaveLength(3);
+    expect(document.querySelectorAll('.seat-cell')).toHaveLength(9);
+    fireEvent.click(screen.getByRole('button', { name: '검색어 지우기' }));
+    expect(document.querySelectorAll('.room-card')).toHaveLength(3);
+    fireEvent.click(seat('1열람실 A 좌석 보기'));
+    fireEvent.click(screen.getByRole('checkbox', { name: '빈자리만' }));
+    expect(document.querySelectorAll('.seat-cell')).toHaveLength(1);
+    expect(seat('1열람실 A 3번 빈자리 상세 보기')).toBeTruthy();
+  });
+
+  it('does not count unknown states as occupied and distinguishes missing room data', async () => {
+    data.seats = data.seats.filter(item => item.roomId !== 107).map(item =>
+      item.key === '102:1' ? { ...item, occupied: null } : item);
+    await openApp();
+    fireEvent.click(screen.getByRole('button', { name: '전체 좌석', exact: true }));
+    const known = seat('1열람실 A 좌석 보기'), missing = seat('5열람실 좌석 보기');
+    expect(known.textContent).toContain('사용 2 / 전체 4');
+    expect(known.textContent).toContain('상태 미확인 1석');
+    expect(missing.querySelector('.ring-label strong').textContent).toBe('—');
+    expect(missing.textContent).toContain('좌석 정보 확인 중');
+  });
+
+  it('restores the room and search after reloading the app', async () => {
+    await openApp();
+    fireEvent.click(screen.getByRole('button', { name: '전체 좌석', exact: true }));
+    fireEvent.click(seat('2열람실 좌석 보기'));
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: '31' } });
+    cleanup();
+    await openApp();
+    expect(screen.getByRole('searchbox').value).toBe('31');
+    expect(screen.getByRole('heading', { name: '2열람실' })).toBeTruthy();
+    expect(document.querySelectorAll('.seat-cell')).toHaveLength(1);
+  });
+
   it('keeps failed login on the password form and clears the password', async () => {
     signedIn = false;
     render(<App />);
@@ -281,6 +372,7 @@ describe('React app with the existing account API', () => {
     fireEvent.click(screen.getByRole('button', { name: '이 좌석 대기 시작' }));
     await screen.findByRole('button', { name: '좌석 추가', exact: true });
     fireEvent.click(screen.getByRole('button', { name: '좌석 추가', exact: true }));
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: '열람실' } });
     fireEvent.click(seat('5열람실 1번 1분 상세 보기'));
     fireEvent.click(screen.getByRole('button', { name: '대기에 추가', exact: true }));
     await screen.findByRole('button', { name: '대기 중 2' });
