@@ -207,11 +207,103 @@ class RenewalTests(ServiceFixture):
         self.assertEqual(self.service.snapshot()['autoRenew']['reservationId'], '2')
 
     def test_provider_impossible_flag_with_remaining_quota_does_not_return_seat(self):
-        self.due(count=2)
-        self.client.current['isRenewalImpossible'] = True
+        for count in (2, 0):
+            with self.subTest(count=count):
+                self.due(count=count)
+                self.client.current['isRenewalImpossible'] = True
+                self.service.tick()
+                self.assertIsNone(self.service.snapshot()['autoRenew'])
+                self.assertEqual(self.store.load()['autoRenewDisabledId'], '1')
+                self.clock.return_value += 300
+                self.restart()
+                self.assertIsNone(self.service.snapshot()['autoRenew'])
+        self.assertEqual(self.calls.mock_calls, [])
+
+    def test_hours_restriction_after_arrival_disables_without_renewal_or_reset(self):
+        self.due()
+        self.client.check_arrival.side_effect = lambda *_: self.client.current.update(
+            isRenewalImpossible=True, renewableCnt=0)
+        self.service.tick()
+        self.restart()
+        self.client.check_arrival.assert_called_once()
+        self.client.renew_reservation.assert_not_called()
+        self.client.release.assert_not_called()
+        self.assertIsNone(self.service.snapshot()['autoRenew'])
+
+    def test_hours_rejection_overrides_zero_quota_and_explains_disabled_notification(self):
+        self.due()
+        def reject(_):
+            self.client.current.update(isRenewalImpossible=True, renewableCnt=0)
+            raise LibraryError('rejected')
+        self.client.renew_reservation.side_effect = reject
+        self.service.tick()
+        self.restart()
+        self.client.renew_reservation.assert_called_once()
+        self.client.release.assert_not_called()
+        state = self.service.snapshot()
+        self.assertIsNone(state['autoRenew'])
+        self.assertEqual(state['autoRenewDisabledId'], '1')
+        failure = next(item for item in state['notifications'] if item['kind'] == 'failure')
+        self.assertIn('자동 연장을 껐습니다', failure['body'])
+
+    def test_hours_are_rechecked_before_reassignment_can_return_a_seat(self):
+        self.due(count=0)
+        current = self.client.reservation()
+        restricted = {**current, 'isRenewalImpossible': True}
+        self.client.reservation = Mock(side_effect=[current, current, restricted])
         self.service.tick()
         self.assertEqual(self.calls.mock_calls, [])
-        self.assertEqual(self.service.snapshot()['autoRenew']['status'], 'retry')
+        self.assertIsNone(self.service.snapshot()['autoRenew'])
+        self.assertEqual(self.store.load()['autoRenewDisabledId'], '1')
+
+    def test_manual_hours_failure_also_disables_existing_automation(self):
+        self.due()
+        self.client.current['isRenewalImpossible'] = True
+        with self.assertRaisesRegex(LibraryError, '자동 연장을 껐습니다'):
+            self.service.renew('1')
+        self.restart()
+        self.assertIsNone(self.service.snapshot()['autoRenew'])
+        self.assertEqual(self.calls.mock_calls, [])
+
+    def test_legacy_night_job_is_disabled_even_on_read_only_restart(self):
+        self.due()
+        self.service._update(autoRenew={**self.service.snapshot()['autoRenew'], 'status': 'night'})
+        self.service._save()
+        self.service = SeatService(self.store, client=self.client, nfc_tags={102: TAG})
+        self.service.tick(allow_actions=False)
+        self.assertIsNone(self.service.snapshot()['autoRenew'])
+        self.assertEqual(self.store.load()['autoRenewDisabledId'], '1')
+        self.assertEqual(self.calls.mock_calls, [])
+
+    def test_legacy_uncertain_night_failure_is_off_but_daytime_pause_is_preserved(self):
+        self.due()
+        plan = {**self.service.snapshot()['autoRenew'], 'status': 'paused',
+                'message': '야간 연장 결과 확인 필요 · 자동 연장 일시 중지'}
+        self.service._update(autoRenew=plan, renewNightUntil=NOON - 7 * 3600)
+        self.service._save()
+        self.restart()
+        self.assertIsNone(self.service.snapshot()['autoRenew'])
+        self.assertEqual(self.store.load()['autoRenewDisabledId'], '1')
+        plan['message'] = '이전 요청 결과를 확인해 주세요.'
+        self.service._update(autoRenew=plan)
+        self.service._save()
+        self.restart()
+        self.assertEqual(self.service.snapshot()['autoRenew']['status'], 'paused')
+        self.assertEqual(self.calls.mock_calls, [])
+
+    def test_morning_does_not_reenable_a_still_valid_booking_after_night_failure(self):
+        self.clock.return_value = datetime(2026, 10, 9, 23, 10, tzinfo=KST).timestamp()
+        self.due()
+        self.client.renew_reservation.side_effect = LibraryError('closed')
+        self.service.tick()
+        self.client.current.update(endTime=end_at(datetime(2026, 10, 10, 6, tzinfo=KST).timestamp()))
+        self.clock.return_value = datetime(2026, 10, 10, 5, tzinfo=KST).timestamp()
+        self.restart()
+        self.service.tick()
+        self.assertIsNone(self.service.snapshot()['autoRenew'])
+        self.assertEqual(self.store.load()['autoRenewDisabledId'], '1')
+        self.client.renew_reservation.assert_called_once()
+        self.client.reserve.assert_not_called()
 
     def test_night_failure_survives_restart_toggle_and_midnight_without_retry(self):
         self.clock.return_value = datetime(2026, 10, 9, 23, 10, tzinfo=KST).timestamp()
@@ -220,7 +312,8 @@ class RenewalTests(ServiceFixture):
         self.service.tick()
         morning = datetime(2026, 10, 10, 5, tzinfo=KST).timestamp()
         self.assertEqual(self.store.load()['renewNightUntil'], morning)
-        self.assertEqual(self.service.snapshot()['autoRenew']['status'], 'night')
+        self.assertIsNone(self.service.snapshot()['autoRenew'])
+        self.assertEqual(self.store.load()['autoRenewDisabledId'], '1')
         self.clock.return_value += 3600
         self.restart()
         self.service.set_auto_renew(False, '1')
@@ -241,7 +334,8 @@ class RenewalTests(ServiceFixture):
         self.due(count=0)
         self.service.tick()
         self.assertEqual(self.calls.mock_calls, [])
-        self.assertEqual(self.service.snapshot()['autoRenew']['status'], 'night')
+        self.assertIsNone(self.service.snapshot()['autoRenew'])
+        self.assertEqual(self.store.load()['autoRenewDisabledId'], '1')
         self.restart()
         self.assertEqual(self.calls.mock_calls, [])
 
@@ -454,3 +548,15 @@ class RenewalCloudTests(unittest.TestCase):
         alice.store.release('held')
         alice.tick()
         self.clients['alice'].renew_reservation.assert_called_once()
+
+    def test_hours_disabled_state_survives_login_and_other_devices_without_affecting_bob(self):
+        alice = self.clouds['alice']
+        self.clients['alice'].current['isRenewalImpossible'] = True
+        alice.tick()
+        self.root.login('alice', 'test-password', remember=True)
+        second_device = self.root.for_account(alice.store.account)
+        second_device.tick()
+        self.assertIsNone(second_device.snapshot()['autoRenew'])
+        self.assertEqual(second_device.snapshot()['autoRenewDisabledId'], '1')
+        self.assertEqual(self.clouds['bob'].snapshot()['autoRenew']['reservationId'], '1')
+        self.clients['alice'].renew_reservation.assert_not_called()

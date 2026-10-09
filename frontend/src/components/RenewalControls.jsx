@@ -20,7 +20,7 @@ export default function RenewalControls({ data, canAct, busy, reachable, onRenew
     ? autoRenew.status === 'scheduled'
       ? !reachable || !data.connected ? '연결 확인 중' : `${timeLabel(autoRenew.dueAt)} 자동 연장 예정`
       : autoRenew.message
-    : '잔여 1시간 59분에 연장';
+    : '자동 연장 꺼짐';
   return <div id="renewal-controls" className="renewal-controls">
     <div className="section-heading">
       <div><h3>좌석 연장</h3><p id="renewal-count" className="fine">

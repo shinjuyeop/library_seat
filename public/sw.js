@@ -1,5 +1,5 @@
-const CACHE = 'library-shell-react-9e1fadd3d805';
-const ASSETS = ['/', ...["/assets/index-BOr4KPqR.js","/assets/index-CTfJdI-_.css"], '/assets/icon.svg?v=5', '/assets/manifest.webmanifest', '/assets/apple-touch-icon.png?v=5', '/assets/icon-192.png?v=5', '/assets/icon-512.png?v=5', '/assets/favicon-32.png?v=5'];
+const CACHE = 'library-shell-react-ccbd86be5588';
+const ASSETS = ['/', ...["/assets/index-BRnejNBx.js","/assets/index-CTfJdI-_.css"], '/assets/icon.svg?v=5', '/assets/manifest.webmanifest', '/assets/apple-touch-icon.png?v=5', '/assets/icon-192.png?v=5', '/assets/icon-512.png?v=5', '/assets/favicon-32.png?v=5'];
 const notificationTab = value => {
   try {
     const url = new URL(value || '/', self.location.origin);

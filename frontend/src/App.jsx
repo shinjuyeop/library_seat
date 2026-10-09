@@ -140,7 +140,7 @@ export default function App() {
     `${reservation.roomName} ${reservation.seatNo}번의 이용 시간을 연장합니다. 등록된 열람실 태그로 확인하므로 도서관 현장에서 진행해 주세요.`,
     () => mutate('renew', { id: reservation.id }), '연장하기');
   const autoRenew = (enabled, id) => enabled ? confirm('자동 연장을 켤까요?',
-    '잔여 1시간 59분에 연장합니다. 남은 횟수가 0이면 같은 좌석을 반납·재배정·확정하고 자동 연장을 계속합니다. 반납 사이 다른 사람이 예약하면 자리를 잃을 수 있습니다. 23시~05시에는 실패 후 재시도와 자동 재배정을 멈춥니다. 도서관에서 이용 중일 때 켜 주세요.',
+    '잔여 1시간 59분에 연장합니다. 남은 횟수가 0이면 같은 좌석을 반납·재배정·확정하고 자동 연장을 계속합니다. 반납 사이 다른 사람이 예약하면 자리를 잃을 수 있습니다. 운영시간 제한으로 연장이 실패하면 자동 연장을 끕니다. 23시~05시에는 자동 재배정도 하지 않습니다. 도서관에서 이용 중일 때 켜 주세요.',
     () => mutate('auto-renew', { enabled, id }), '자동 연장 켜기') : mutate('auto-renew', { enabled, id });
   const startWait = targets => {
     const execute = async () => {

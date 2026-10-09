@@ -103,14 +103,21 @@ def sanitize_seat_catalog(state):
     # Retire persisted temporary-seat loops, including cloud documents from older versions.
     state['repeat'] = None
     state['repeatControl'] = {'observedId': None, 'paused': True}
+    # Older versions kept failed night renewals enabled until the next morning.
+    plan = state.get('autoRenew') or {}
+    if (plan.get('status') == 'night' or (plan.get('status') == 'paused'
+            and state.get('renewNightUntil') and plan.get('message', '').startswith('야간 연장'))):
+        state['autoRenewDisabledId'] = state['autoRenew']['reservationId']
+        state['autoRenew'] = None
     return state
 
 
 class LibraryError(Exception):
-    def __init__(self, message, *, expired=False, uncertain=False):
+    def __init__(self, message, *, expired=False, uncertain=False, operating_hours=False):
         super().__init__(message)
         self.expired = expired
         self.uncertain = uncertain
+        self.operating_hours = operating_hours
 
 
 def normalize_reservation(data):
@@ -292,6 +299,8 @@ class SeatService:
             'events': [], 'demo': demo, 'interval': self.interval,
         }
         sanitize_seat_catalog(self.state)
+        if saved.get('autoRenew') and self.state['autoRenew'] is None:
+            self._save()
 
     def snapshot(self):
         with self.lock:
@@ -867,13 +876,15 @@ class SeatService:
     def _renewal_plan(self, current):
         end = self._renewal_source(current, current['id'])
         plan = {'reservationId': current['id'], 'seatId': current['seatId'], 'roomId': current['roomId'],
-                'endTime': current['endTime'], 'dueAt': max(end - AUTO_RENEW_REMAINING, current.get('renewableAt') or 0),
+                'endTime': current['endTime'], 'dueAt': max(end - AUTO_RENEW_REMAINING, current.get('renewableAt') or 0,
+                                                         self.snapshot()['renewNightUntil'] or 0),
                 'status': 'scheduled', 'retryAt': None, 'message': ''}
-        night_until = self.snapshot()['renewNightUntil']
-        if (night_until or 0) > time.time():
-            plan.update(status='night', retryAt=night_until,
-                        message='야간 연장 중지 · 오전 5시 이후 현재 좌석을 다시 확인합니다.')
         return plan
+
+    @staticmethod
+    def _require_renewal_hours(current):
+        if current.get('isRenewalImpossible') is True:
+            raise LibraryError('도서관 운영시간 제한으로 좌석을 연장할 수 없습니다.', operating_hours=True)
 
     def set_auto_renew(self, enabled, expected_id):
         if type(enabled) is not bool or not isinstance(expected_id, str):
@@ -938,7 +949,7 @@ class SeatService:
             return
         if (self.snapshot()['renewNightUntil'] or 0) > time.time():
             return
-        if current['endTime'] != plan['endTime'] or plan['status'] == 'night':
+        if current['endTime'] != plan['endTime']:
             try:
                 plan = self._renewal_plan(current)
             except LibraryError:
@@ -969,7 +980,7 @@ class SeatService:
 
     def _reassign_for_renewal(self, current):
         if closed_until():
-            raise LibraryError('23시~05시에는 연장 횟수 소진으로 좌석을 반납·재배정하지 않습니다.')
+            raise LibraryError('23시~05시에는 연장 횟수 소진으로 좌석을 반납·재배정하지 않습니다.', operating_hours=True)
         previous = self.snapshot()
         self.reassign(current['id'], for_renewal=True)
         if self.snapshot()['autoRenew'] and self.snapshot()['autoRenew']['status'] == 'scheduled':
@@ -995,13 +1006,14 @@ class SeatService:
                     self._save()
                     return
                 raise LibraryError('연장은 좌석 종료 2시간 전부터 가능합니다.')
+            self._require_renewal_hours(current)
             if renewal_count(current.get('renewableCnt')) == 0:
                 if automatic:
                     stage = 'reassign'
                     self._reassign_for_renewal(current)
                     return
                 raise LibraryError('연장 가능 횟수를 모두 사용했습니다.')
-            if current.get('isRenewable') is False or current.get('isRenewalImpossible') is True:
+            if current.get('isRenewable') is False:
                 raise LibraryError('현재 도서관에서 연장을 허용하지 않습니다. 운영시간을 확인해 주세요.')
             if plan:
                 self._update(autoRenew={**plan, 'status': 'working', 'message': '좌석 연장 확인 중'})
@@ -1015,13 +1027,14 @@ class SeatService:
                 return
             if not self._same_renewal_seat(verified, current) or verified['endTime'] != current['endTime']:
                 raise LibraryError('태그 확인 중 내 좌석이나 종료 시간이 변경되었습니다.', uncertain=True)
+            self._require_renewal_hours(verified)
             if renewal_count(verified.get('renewableCnt')) == 0:
                 if automatic:
                     stage = 'reassign'
                     self._reassign_for_renewal(verified)
                     return
                 raise LibraryError('연장 가능 횟수를 모두 사용했습니다.')
-            if verified.get('isRenewable') is False or verified.get('isRenewalImpossible') is True:
+            if verified.get('isRenewable') is False:
                 raise LibraryError('현재 도서관에서 연장을 허용하지 않습니다.')
             stage = 'renew'
             try:
@@ -1037,6 +1050,9 @@ class SeatService:
                 if self._renewal_succeeded(current, verified):
                     self._finish_renewal(current, verified)
                     return
+                if self._same_renewal_seat(verified, current) and verified.get('isRenewalImpossible') is True:
+                    raise LibraryError('도서관 운영시간 제한으로 좌석을 연장할 수 없습니다.',
+                                       uncertain=error.uncertain, operating_hours=True) from None
                 if (automatic and not error.uncertain and self._same_renewal_seat(verified, current)
                         and renewal_count(verified.get('renewableCnt')) == 0):
                     stage = 'reassign'
@@ -1051,24 +1067,27 @@ class SeatService:
             self._finish_renewal(current, verified)
         except LibraryError as error:
             night = closed_until() if automatic or stage is not None else None
-            error.notification_title = '좌석 연장에 실패했습니다'
             if night:
                 self._update(renewNightUntil=night)
             if plan and plan['reservationId'] == expected_id:
-                status = 'paused' if error.uncertain or error.expired or stage == 'reassign' else 'retry'
-                if night:
-                    resetting = stage == 'reassign' and (self.snapshot()['autoRenew'] or {}).get('status') == 'working'
-                    status = 'paused' if error.uncertain or resetting else 'night'
-                message = ('야간 연장 결과 확인 필요 · 자동 연장 일시 중지' if night and status == 'paused' else
-                           '야간 연장 실패 · 오전 5시까지 자동 연장을 다시 시도하지 않습니다.' if night else
-                           '자동 연장 일시 중지 · 내 좌석을 확인해 주세요.' if status == 'paused' else
-                           '연장 보류 · 5분 후 다시 확인합니다.')
-                self._update(autoRenew={**(self.snapshot()['autoRenew'] or plan), 'status': status,
-                                       'retryAt': night or time.time() + 300, 'message': message})
+                if night or error.operating_hours:
+                    disabled_id = (self.snapshot()['autoRenew'] or plan)['reservationId']
+                    self._update(autoRenew=None, autoRenewDisabledId=disabled_id)
+                    message = ('운영시간 제한으로 자동 연장을 껐습니다.' if error.operating_hours else
+                               '야간 연장 실패로 자동 연장을 껐습니다.')
+                    error = LibraryError(f'{message} {error}', expired=error.expired,
+                                         uncertain=error.uncertain, operating_hours=True)
+                else:
+                    status = 'paused' if error.uncertain or error.expired or stage == 'reassign' else 'retry'
+                    message = ('자동 연장 일시 중지 · 내 좌석을 확인해 주세요.' if status == 'paused' else
+                               '연장 보류 · 5분 후 다시 확인합니다.')
+                    self._update(autoRenew={**(self.snapshot()['autoRenew'] or plan), 'status': status,
+                                           'retryAt': time.time() + 300, 'message': message})
                 self._event(message)
+            error.notification_title = '좌석 연장에 실패했습니다'
             self._failure(error)
             self._save()
-            raise
+            raise error
 
     def renew(self, expected_id):
         if not isinstance(expected_id, str) or not re.fullmatch(r'[0-9]{1,20}', expected_id):
@@ -1163,6 +1182,7 @@ class SeatService:
                     raise LibraryError('이 열람실은 자동 배정확정을 지원하지 않아 반납하지 않았습니다.')
                 if for_renewal:
                     end = self._renewal_source(current, expected_id)
+                    self._require_renewal_hours(current)
                     if (closed_until() or renewal_count(current.get('renewableCnt')) != 0
                             or end - time.time() > AUTO_RENEW_REMAINING):
                         raise LibraryError('연장 횟수 소진이나 재배정 가능 시간을 확인할 수 없어 반납하지 않았습니다.')

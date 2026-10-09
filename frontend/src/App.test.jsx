@@ -131,7 +131,7 @@ beforeEach(() => {
     }
     if (path === 'reassign') {
       data.reservation = { ...data.reservation, id: '124', state: 'CHARGE' };
-      if (data.autoRenew) data.autoRenew = { ...data.autoRenew, reservationId: '124' };
+      data.autoRenew = { reservationId: '124', dueAt: Date.now() / 1000 + 3600, status: 'scheduled' };
       data.repeat = null;
       data.running = false;
       data.targets = [];
@@ -756,15 +756,37 @@ describe('seat renewal', () => {
     expect(document.getElementById('toast')?.textContent || '').not.toContain('연장 완료');
   });
 
-  it('shows paused nightly state and keeps enabled auto-renew after reassignment', async () => {
-    data.autoRenew = { reservationId: '123', status: 'night', message: '야간 연장 실패 · 오전 5시까지 자동 연장을 다시 시도하지 않습니다.' };
+  it('shows hours failure as disabled and defaults a new reassigned booking on', async () => {
+    data.autoRenew = null;
+    data.autoRenewDisabledId = '123';
+    data.error = '운영시간 제한으로 자동 연장을 껐습니다.';
     await openMySeat();
-    expect(screen.getByText(/오전 5시까지 자동 연장을/)).toBeTruthy();
-    expect(screen.getByRole('switch', { name: '자동 연장' }).getAttribute('aria-checked')).toBe('true');
+    expect(screen.getByText('자동 연장 꺼짐')).toBeTruthy();
+    expect(screen.getByRole('switch', { name: '자동 연장' }).getAttribute('aria-checked')).toBe('false');
     fireEvent.click(screen.getByRole('button', { name: '좌석 반납 후 다시 배정' }));
     fireEvent.click(screen.getByRole('button', { name: '반납 후 다시 배정' }));
     await waitFor(() => expect(data.autoRenew.reservationId).toBe('124'));
     expect(screen.getByRole('switch', { name: '자동 연장' }).getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('refreshes a switched-off auto-renew after a manual renewal hours failure', async () => {
+    data.autoRenew = { reservationId: '123', status: 'scheduled', dueAt: Date.now() / 1000 };
+    const normalFetch = fakeFetch.getMockImplementation();
+    fakeFetch.mockImplementation((url, options) => {
+      if (url.endsWith('/renew')) {
+        data.autoRenew = null;
+        data.autoRenewDisabledId = '123';
+        data.error = '운영시간 제한으로 자동 연장을 껐습니다.';
+        return response({ error: data.error }, 422);
+      }
+      return normalFetch(url, options);
+    });
+    await openMySeat();
+    fireEvent.click(screen.getByRole('button', { name: '지금 연장' }));
+    fireEvent.click(screen.getByRole('button', { name: '연장하기' }));
+    await screen.findByText('자동 연장 꺼짐');
+    expect(screen.getByRole('switch', { name: '자동 연장' }).getAttribute('aria-checked')).toBe('false');
+    expect(document.getElementById('toast').textContent).toContain('자동 연장을 껐습니다');
   });
 
   it('disables early or exhausted manual renewal and keeps the switch available', async () => {

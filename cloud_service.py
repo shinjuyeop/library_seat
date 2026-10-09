@@ -130,10 +130,8 @@ class CloudService:
             due = max(now, state.get('nextCheck') or now)
         elif state['autoRenew']:
             plan = state['autoRenew']
-            if plan['status'] in {'paused', 'working', 'night'}:
+            if plan['status'] in {'paused', 'working'}:
                 due = now + 300
-                if plan['status'] == 'night':
-                    due = min(due, max(now + 1, state['renewNightUntil'] or now))
             else:
                 due = max(now + 1, min(now + 30, max(plan['dueAt'], plan.get('retryAt') or 0, state['renewNightUntil'] or 0)))
         elif state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE':
