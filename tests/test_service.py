@@ -730,6 +730,33 @@ class CloudTests(unittest.TestCase):
         self.assertEqual(alice.snapshot()['targets'], ['102:2', '232:2'])
         self.assertTrue(alice.snapshot()['running'])
 
+    def test_reassignment_uses_account_lease_for_entire_flow(self):
+        with patch.dict('os.environ', {'LIBRARY_NFC_TAGS': json.dumps({'102': '0123456789ABCDEF'})}):
+            alice, bob = self.login(), self.login('bob')
+            for cloud in (alice, bob):
+                cloud.reserve('102:3')
+                cloud.confirm(cloud.snapshot()['reservation']['id'])
+            identifier = alice.snapshot()['reservation']['id']
+            bob_before = copy.deepcopy(self.clients['bob'].current)
+            self.assertTrue(alice.store.claim('other-operation'))
+            with self.assertRaises(LibraryError):
+                alice.reassign(identifier)
+            alice.store.release('other-operation')
+            release = self.clients['alice'].release
+            def guarded_release(reservation):
+                with self.assertRaises(LibraryError):
+                    alice.reassign(identifier)
+                self.assertFalse(alice.store.read()['state']['running'])
+                self.assertTrue(alice.store.read()['state']['repeatControl']['paused'])
+                release(reservation)
+            self.clients['alice'].release = guarded_release
+            alice.reassign(identifier)
+            state = CloudService(alice.store, self.key).snapshot()
+            self.assertEqual(state['reservation']['state'], 'CHARGE')
+            self.assertNotEqual(state['reservation']['id'], identifier)
+            self.assertIsNone(state['repeat'])
+            self.assertEqual(self.clients['bob'].current, bob_before)
+
     def test_cloud_live_edit_cannot_restart_a_completed_job(self):
         cloud = self.login()
         cloud.set_wait(['102:3'], True)

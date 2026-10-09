@@ -219,6 +219,14 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
         account_service().confirm(body['id'])
         return jsonify(ok=True)
 
+    @app.post('/api/reassign')
+    def reassign():
+        body = request.get_json()
+        if not isinstance(body, dict) or not isinstance(body.get('id'), str) or not re.fullmatch(r'[0-9]{1,20}', body['id']):
+            return jsonify(error='다시 배정할 좌석을 확인해 주세요.'), 400
+        account_service().reassign(body['id'])
+        return jsonify(ok=True)
+
     @app.post('/api/release')
     def release():
         body = request.get_json()

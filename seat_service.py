@@ -783,6 +783,76 @@ class SeatService:
                 self._failure(error)
                 raise
 
+    def reassign(self, expected_id):
+        """One explicit transaction: return, reserve the same seat, then confirm it."""
+        if not isinstance(expected_id, str) or not re.fullmatch(r'[0-9]{1,20}', expected_id):
+            raise LibraryError('배정 정보를 다시 확인해 주세요.')
+        with self.operation:
+            if not self.client:
+                raise LibraryError('도서관 계정을 먼저 연결해 주세요.')
+            stage = None
+            try:
+                current = self._read_reservation()
+                self._update(reservation=current, reservationFresh=True)
+                if not current or current['id'] != expected_id or current['state'] not in {'CHARGE', 'IN_USE'}:
+                    raise LibraryError('확정된 내 좌석이 변경되었습니다. 다시 확인해 주세요.')
+                if (not str(current.get('seatId')).isdigit() or not str(current.get('roomId')).isdigit()
+                        or int(current['roomId']) not in ROOMS):
+                    raise LibraryError('현재 좌석 정보를 확인할 수 없어 반납하지 않았습니다.')
+                if int(current['roomId']) not in self.nfc_tags:
+                    raise LibraryError('이 열람실은 자동 배정확정을 지원하지 않아 반납하지 않았습니다.')
+
+                # The cloud lease and this lock span all three steps. Never arm the
+                # normal temporary repeat between reserve and confirm, including crashes.
+                self._update(running=False, targets=[], repeat=None, error=None,
+                             repeatControl={'observedId': expected_id, 'paused': True})
+                self._save()
+                stage = '좌석 반납'
+                self._event('같은 좌석의 재배정·확정을 위해 좌석을 반납합니다.')
+                self.client.release(current)
+                after_return = self._read_reservation()
+                self._update(reservation=after_return, reservationFresh=True)
+                if after_return:
+                    raise LibraryError('좌석 반납을 확인하지 못해 재예약하지 않았습니다.')
+
+                stage = '같은 좌석 재예약'
+                booked_at = time.time()
+                self.client.reserve(current['seatId'])
+                booked = self._read_reservation()
+                if (booked and booked['state'] == 'TEMP_CHARGE' and booked.get('startedAt') is None):
+                    booked['startedAt'] = booked_at
+                self._update(reservation=booked, reservationFresh=True)
+                if (not booked or booked['id'] == expected_id or booked['state'] not in ACTIVE_STATES
+                        or str(booked.get('seatId')) != str(current['seatId'])
+                        or str(booked.get('roomId')) != str(current['roomId'])):
+                    raise LibraryError('같은 좌석의 새 배정을 확인하지 못했습니다. 내 좌석을 확인해 주세요.')
+                self._update(repeatControl={'observedId': booked['id'], 'paused': True})
+                self._save()
+
+                stage = '배정 확정'
+                self.confirm(booked['id'])
+                self._event('같은 좌석의 재배정과 배정확정을 완료했습니다.')
+                self._save()
+            except LibraryError as error:
+                if stage is None:
+                    self._failure(error)
+                    raise
+                failure = LibraryError(f'{stage} 단계에서 중지했습니다. {error}',
+                                       expired=error.expired, uncertain=error.uncertain)
+                self._failure(failure)
+                # Show what is actually held after a failure. This read never resumes
+                # later write steps, even if an ambiguous request happened to succeed.
+                if self.client:
+                    try:
+                        self._update(reservation=self._read_reservation(), reservationFresh=True)
+                    except LibraryError as read_error:
+                        if read_error.expired:
+                            self._failure(read_error)
+                self._update(error=str(failure))
+                self._event(str(failure))
+                self._save()
+                raise failure from None
+
     def release(self, expected_id, expected_state):
         with self.operation:
             if not self.client:

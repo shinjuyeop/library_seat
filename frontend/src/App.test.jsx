@@ -118,6 +118,12 @@ beforeEach(() => {
       data.running = false;
       data.targets = [];
     }
+    if (path === 'reassign') {
+      data.reservation = { ...data.reservation, id: '124', state: 'CHARGE' };
+      data.repeat = null;
+      data.running = false;
+      data.targets = [];
+    }
     if (path === 'release') {
       data.reservation = null;
       data.repeat = null;
@@ -437,6 +443,101 @@ describe('allocation confirmation', () => {
     await mySeat();
     expect(screen.queryByRole('button', { name: '배정 확정' })).toBeNull();
     expect(screen.getByText('이 열람실은 현장에서 공식 앱으로 NFC 인증을 진행해 주세요.')).toBeTruthy();
+  });
+});
+
+describe('return and reassign a confirmed seat', () => {
+  beforeEach(() => {
+    data.reservation = { id: '123', roomId: 102, seatId: 102003, seatNo: '3', roomName: '1열람실 A', state: 'CHARGE' };
+  });
+  const mySeat = async () => {
+    await openApp();
+    fireEvent.click(screen.getByRole('button', { name: '내 좌석', exact: true }));
+  };
+  const openConfirmation = () => fireEvent.click(screen.getByRole('button', { name: '좌석 반납 후 다시 배정' }));
+  const accept = () => fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '반납 후 다시 배정' }));
+
+  it('puts the button above return and requires an explicit warning confirmation', async () => {
+    await mySeat();
+    expect(document.getElementById('reassign').nextElementSibling.id).toBe('release');
+    openConfirmation();
+    expect(screen.getByRole('dialog').textContent).toContain('자리를 잃을 수 있습니다');
+    expect(writes('reassign')).toHaveLength(0);
+    fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '취소' }));
+    expect(writes('reassign')).toHaveLength(0);
+    expect(writes('release')).toHaveLength(0);
+  });
+
+  it('uses one server action and shows success only with the replacement confirmed seat', async () => {
+    await mySeat();
+    openConfirmation();
+    accept();
+    await waitFor(() => expect(document.getElementById('toast')?.textContent).toBe('재배정·확정 완료 · 1열람실 A 3번'));
+    expect(writes('reassign')).toHaveLength(1);
+    expect(writes('reassign')[0].body).toEqual({ id: '123' });
+    expect(writes('reassign')[0].options.headers['X-CSRF-Token']).toBe('test-csrf');
+    expect(writes('release')).toHaveLength(0);
+    expect(writes('reserve')).toHaveLength(0);
+    expect(writes('confirm')).toHaveLength(0);
+    expect(document.getElementById('reservation-badge').textContent).toBe('배정 확정');
+  });
+
+  it('keeps a failed confirmation at temporary state with its error visible', async () => {
+    await mySeat();
+    const original = fakeFetch.getMockImplementation();
+    fakeFetch.mockImplementation((url, options) => {
+      if (url === '/api/reassign') {
+        data.reservation = { ...data.reservation, id: '124', state: 'TEMP_CHARGE' };
+        data.error = '배정 확정 단계에서 중지했습니다. 태그 확인에 실패했습니다.';
+        return response({ error: data.error }, 409);
+      }
+      return original(url, options);
+    });
+    openConfirmation();
+    accept();
+    await screen.findByRole('button', { name: '배정 확정', exact: true });
+    expect(document.getElementById('reservation-badge').textContent).toBe('임시배정 · 확정 필요');
+    expect(document.getElementById('service-error').textContent).toBe(data.error);
+    expect(document.getElementById('toast').textContent).toBe(data.error);
+    expect(screen.queryByText(/재배정·확정 완료/)).toBeNull();
+    expect(screen.getByRole('switch').getAttribute('aria-checked')).toBe('false');
+  });
+
+  it('disables actions during the request and prevents double submission', async () => {
+    await mySeat();
+    const original = fakeFetch.getMockImplementation();
+    let finish;
+    fakeFetch.mockImplementation((url, options) => url === '/api/reassign'
+      ? new Promise(resolve => { finish = () => resolve(original(url, options)); })
+      : original(url, options));
+    openConfirmation();
+    accept();
+    await screen.findByText('좌석 반납 → 같은 좌석 예약 → 배정 확정');
+    expect(screen.getByRole('button', { name: '재배정 진행 중…' }).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: '좌석 반납', exact: true }).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '재배정 진행 중…' }));
+    await act(async () => { finish(); });
+    expect(writes('reassign')).toHaveLength(1);
+    await waitFor(() => expect(screen.getByRole('button', { name: '좌석 반납 후 다시 배정' }).disabled).toBe(false));
+    expect(document.getElementById('reassign-progress')).toBeNull();
+  });
+
+  it('does not offer reassign for a room without confirmation support', async () => {
+    data.confirmationRooms = [];
+    await mySeat();
+    expect(screen.queryByRole('button', { name: '좌석 반납 후 다시 배정' })).toBeNull();
+    expect(screen.getByRole('button', { name: '좌석 반납', exact: true })).toBeTruthy();
+  });
+
+  it('disables reassign for stale or offline state', async () => {
+    data.reservationFresh = false;
+    await mySeat();
+    expect(screen.getByRole('button', { name: '좌석 반납 후 다시 배정' }).disabled).toBe(true);
+    data.reservationFresh = true;
+    fireEvent(window, new Event('focus'));
+    await waitFor(() => expect(screen.getByRole('button', { name: '좌석 반납 후 다시 배정' }).disabled).toBe(false));
+    fireEvent(window, new Event('offline'));
+    expect(screen.getByRole('button', { name: '좌석 반납 후 다시 배정' }).disabled).toBe(true);
   });
 });
 

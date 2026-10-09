@@ -35,10 +35,12 @@ export default function ReservationCard({
   data,
   notice,
   busy,
+  reassigning,
   reachable,
   onRelease,
   onRepeat,
   onConfirm,
+  onReassign,
 }) {
   const { reservation, reservationFresh, repeat } = data;
   if (!reservation && !repeat) return null;
@@ -98,6 +100,13 @@ export default function ReservationCard({
               disabled={!canAct || !reservationFresh} onClick={() => onConfirm(reservation)}>
               배정 확정
             </button>}
+            {confirmed && confirmationAvailable && <button id="reassign" className="primary"
+              disabled={!canAct || !reservationFresh} onClick={() => onReassign(reservation)}>
+              {reassigning ? '재배정 진행 중…' : '좌석 반납 후 다시 배정'}
+            </button>}
+            {reassigning && <p id="reassign-progress" className="fine" role="status">
+              좌석 반납 → 같은 좌석 예약 → 배정 확정
+            </p>}
             <button
               id="release"
               className="secondary"

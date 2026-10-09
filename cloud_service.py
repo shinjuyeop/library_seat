@@ -240,6 +240,9 @@ class CloudService:
     def confirm(self, expected_id):
         self._execute(lambda worker: worker.confirm(expected_id))
 
+    def reassign(self, expected_id):
+        self._execute(lambda worker: worker.reassign(expected_id))
+
     def release(self, expected_id, expected_state):
         self._execute(lambda worker: worker.release(expected_id, expected_state))
 

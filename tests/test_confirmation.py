@@ -149,6 +149,181 @@ class ConfirmationTests(ServiceFixture):
         self.assertNotIn(TAG, response.text)
 
 
+class ReassignmentTests(ServiceFixture):
+    def setUp(self):
+        super().setUp()
+        self.service.nfc_tags = {102: TAG}
+        self.client.reserve(102003)
+        self.client.confirm_reservation(self.client.current['id'])
+        self.service.tick()
+        self.service.set_wait(['232:1'], True)
+        self.original = copy.deepcopy(self.client.current)
+        self.calls = Mock()
+        for method in ('release', 'reserve', 'check_arrival', 'confirm_reservation'):
+            wrapped = Mock(wraps=getattr(self.client, method))
+            setattr(self.client, method, wrapped)
+            self.calls.attach_mock(wrapped, method)
+
+    def reassign(self):
+        self.service.reassign(self.original['id'])
+
+    def assert_disarmed(self):
+        saved = self.store.load()
+        self.assertFalse(saved['running'])
+        self.assertEqual(saved['targets'], [])
+        self.assertIsNone(saved['repeat'])
+        self.assertTrue(saved['repeatControl']['paused'])
+
+    def test_returns_reserves_and_confirms_same_seat_in_order(self):
+        original_release = self.client.release._mock_wraps
+        def release(reservation):
+            self.assert_disarmed()
+            original_release(reservation)
+        self.client.release.side_effect = release
+        self.reassign()
+        self.assertEqual([call[0] for call in self.calls.mock_calls],
+                         ['release', 'reserve', 'check_arrival', 'confirm_reservation'])
+        self.client.reserve.assert_called_once_with(self.original['seatId'])
+        current = self.service.snapshot()['reservation']
+        self.assertNotEqual(current['id'], self.original['id'])
+        self.assertEqual((current['seatId'], current['roomId'], current['state']), (102003, 102, 'CHARGE'))
+        self.client.confirm_reservation.assert_called_once_with(current['id'])
+        self.assertTrue(self.service.snapshot()['reservationFresh'])
+        self.assertIsNone(self.service.snapshot()['error'])
+        self.assert_disarmed()
+        # Replaying the old browser request must never return the replacement seat.
+        with self.assertRaises(LibraryError):
+            self.reassign()
+        self.client.release.assert_called_once()
+
+    def test_invalid_or_changed_source_is_never_returned(self):
+        for current in (None, {**self.original, 'id': '999'}, {**self.original, 'state': 'TEMP_CHARGE'},
+                        {**self.original, 'state': 'UNKNOWN'}, {**self.original, 'seatId': None},
+                        {**self.original, 'roomId': 232}):
+            with self.subTest(current=current):
+                self.client.current = current
+                with self.assertRaises(LibraryError):
+                    self.reassign()
+                self.assertEqual(self.calls.mock_calls, [])
+
+    def test_return_failure_prevents_rebooking(self):
+        self.client.release.side_effect = LibraryError('return rejected')
+        with self.assertRaisesRegex(LibraryError, '좌석 반납 단계'):
+            self.reassign()
+        self.client.reserve.assert_not_called()
+        self.assertEqual(self.service.snapshot()['reservation']['id'], self.original['id'])
+        self.assert_disarmed()
+
+    def test_ambiguous_return_is_not_followed_by_reserve_even_if_empty(self):
+        def timeout(_):
+            self.client.current = None
+            raise LibraryError('timeout', uncertain=True)
+        self.client.release.side_effect = timeout
+        with self.assertRaisesRegex(LibraryError, '좌석 반납 단계'):
+            self.reassign()
+        self.client.reserve.assert_not_called()
+        self.assertIsNone(self.service.snapshot()['reservation'])
+        self.assert_disarmed()
+
+    def test_return_must_be_verified_before_reserve(self):
+        self.client.release = Mock()
+        with self.assertRaisesRegex(LibraryError, '좌석 반납 단계'):
+            self.reassign()
+        self.client.reserve.assert_not_called()
+        self.assert_disarmed()
+
+    def test_contested_seat_stops_without_retry_or_confirmation(self):
+        self.client.reserve.side_effect = LibraryError('already taken')
+        with self.assertRaisesRegex(LibraryError, '같은 좌석 재예약 단계'):
+            self.reassign()
+        self.assertIsNone(self.service.snapshot()['reservation'])
+        self.assertTrue(self.service.snapshot()['reservationFresh'])
+        self.client.check_arrival.assert_not_called()
+        self.service.tick()
+        self.client.reserve.assert_called_once()
+        self.assert_disarmed()
+
+    def test_ambiguous_reserve_keeps_detected_temporary_seat_without_more_writes(self):
+        reserve = self.client.reserve._mock_wraps
+        def timeout(seat_id):
+            reserve(seat_id)
+            raise LibraryError('timeout', uncertain=True)
+        self.client.reserve.side_effect = timeout
+        with self.assertRaisesRegex(LibraryError, '같은 좌석 재예약 단계'):
+            self.reassign()
+        self.assertEqual(self.service.snapshot()['reservation']['state'], 'TEMP_CHARGE')
+        self.client.check_arrival.assert_not_called()
+        self.assert_disarmed()
+
+    def test_wrong_replacement_seat_or_reused_id_is_never_confirmed(self):
+        reserve = self.client.reserve._mock_wraps
+        for override in ({'id': self.original['id']}, {'seatId': 102004}, {'roomId': 232}, {'state': 'UNKNOWN'}):
+            with self.subTest(override=override):
+                self.client.current = copy.deepcopy(self.original)
+                def replacement(seat_id):
+                    reserve(seat_id)
+                    self.client.current.update(override)
+                self.client.reserve.side_effect = replacement
+                with self.assertRaisesRegex(LibraryError, '같은 좌석 재예약 단계'):
+                    self.reassign()
+                self.client.check_arrival.assert_not_called()
+        self.assert_disarmed()
+
+    def test_failed_confirmation_keeps_new_temporary_seat_and_shows_failed_stage(self):
+        self.client.check_arrival.side_effect = LibraryError('tag rejected')
+        with self.assertRaisesRegex(LibraryError, '배정 확정 단계'):
+            self.reassign()
+        state = self.service.snapshot()
+        self.assertEqual(state['reservation']['state'], 'TEMP_CHARGE')
+        self.assertNotEqual(state['reservation']['id'], self.original['id'])
+        self.assertTrue(state['reservationFresh'])
+        self.assertIn('배정 확정 단계', state['error'])
+        self.client.release.assert_called_once()
+        self.client.confirm_reservation.assert_not_called()
+        restarted = SeatService(self.store, client=self.client)
+        restarted.tick()
+        self.assertIsNone(restarted.snapshot()['repeat'])
+        self.assertFalse(restarted.snapshot()['running'])
+
+    def test_confirmation_timeout_can_reconcile_success_without_repeating(self):
+        confirm = self.client.confirm_reservation._mock_wraps
+        def timeout(identifier):
+            confirm(identifier)
+            raise LibraryError('timeout', uncertain=True)
+        self.client.confirm_reservation.side_effect = timeout
+        self.reassign()
+        self.assertEqual(self.service.snapshot()['reservation']['state'], 'CHARGE')
+        self.client.confirm_reservation.assert_called_once()
+        self.assert_disarmed()
+
+    def test_crash_after_new_booking_cannot_arm_repeat_on_restart(self):
+        self.client.check_arrival.side_effect = SystemExit('crash')
+        with self.assertRaises(SystemExit):
+            self.reassign()
+        self.assert_disarmed()
+        restarted = SeatService(self.store, client=self.client)
+        restarted.tick()
+        self.assertEqual(restarted.snapshot()['reservation']['state'], 'TEMP_CHARGE')
+        self.assertIsNone(restarted.snapshot()['repeat'])
+        self.client.release.assert_called_once()
+        self.client.reserve.assert_called_once()
+
+    def test_api_requires_login_csrf_and_original_booking_id(self):
+        app = create_app(self.service, 'a-test-password-long-enough', secure_cookie=False)
+        browser = app.test_client()
+        csrf = browser.get('/api/session').json['csrf']
+        payload = {'id': self.original['id']}
+        self.assertEqual(browser.post('/api/reassign', json=payload, headers={'X-CSRF-Token': csrf}).status_code, 401)
+        csrf = browser.post('/api/login', json={'password': 'a-test-password-long-enough'}, headers={'X-CSRF-Token': csrf}).json['csrf']
+        self.assertEqual(browser.post('/api/reassign', json=payload).status_code, 403)
+        headers = {'X-CSRF-Token': csrf}
+        for body in ([], {}, {'id': 1}, {'id': '../2'}, {'id': '1' * 21}):
+            self.assertEqual(browser.post('/api/reassign', json=body, headers=headers).status_code, 400)
+        self.assertEqual(browser.post('/api/reassign', json=payload, headers=headers).status_code, 200)
+        self.assertEqual(browser.post('/api/reassign', json=payload, headers=headers).status_code, 409)
+        self.client.release.assert_called_once()
+
+
 class ConfirmationTransportTests(unittest.TestCase):
     def test_exact_provider_requests_and_strict_arrival_result(self):
         client = LibraryClient('fake-token')

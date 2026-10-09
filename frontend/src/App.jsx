@@ -103,6 +103,9 @@ export default function App() {
   const confirmAllocation = reservation => confirm('배정을 확정할까요?',
     `${reservation.roomName} ${reservation.seatNo}번을 확정합니다. 등록된 열람실 태그 정보로 확인을 요청하므로 도서관 현장에서 진행해 주세요. 요청을 시작하면 자동 재예약과 갈아타기 대기는 중지됩니다.`,
     () => mutate('confirm', { id: reservation.id }, { resetSelection: true }), '배정 확정');
+  const reassign = reservation => confirm('반납 후 같은 좌석을 다시 배정할까요?',
+    `${reservation.roomName} ${reservation.seatNo}번을 반납한 뒤 바로 같은 좌석을 예약하고 배정확정까지 진행합니다. 반납 직후 다른 사람이 예약하면 자리를 잃을 수 있습니다. 자동 재예약과 갈아타기 대기는 중지됩니다. 도서관 현장에서 진행해 주세요.`,
+    () => mutate('reassign', { id: reservation.id }, { resetSelection: true }), '반납 후 다시 배정');
   const repeat = (enabled, id) => enabled ? confirm('자동 재예약을 켤까요?',
     '임시배정 후 9분마다 취소하고 같은 좌석을 다시 예약합니다. 취소 직후 다른 사람이 잡으면 자리를 잃을 수 있습니다. 화면을 닫아도 계속되며, NFC 인증을 마치면 종료됩니다.',
     () => mutate('repeat', { enabled, id }), '자동 재예약 켜기') : mutate('repeat', { enabled, id });
@@ -168,7 +171,7 @@ export default function App() {
                 <strong>{data.reservationFresh ? data.running ? '빈자리를 기다리고 있어요' : '아직 배정된 좌석이 없어요' : '내 좌석을 확인하고 있어요'}</strong>
                 <p>{data.running ? '예약에 성공하면 여기에 좌석이 표시됩니다.' : data.reservationFresh ? '원하는 자리를 찾고 예약을 시작해 보세요.' : '다시 연결한 뒤 최신 배정 상태를 확인해 주세요.'}</p>
                 <button className="secondary" onClick={() => goTo('find')}>좌석 찾아보기</button></section>}
-              <ReservationCard cardRef={reservationCard} data={data} notice={library.reservationNotice} busy={busy} reachable={reachable} onRelease={release} onRepeat={repeat} onConfirm={confirmAllocation} />
+              <ReservationCard cardRef={reservationCard} data={data} notice={library.reservationNotice} busy={busy} reassigning={library.busyAction === 'reassign'} reachable={reachable} onRelease={release} onRepeat={repeat} onConfirm={confirmAllocation} onReassign={reassign} />
               {!data.running && waitingList}
               {data.reservation && <button className="browse-link" onClick={() => goTo('find')}>다른 좌석 찾아보기<Icon name="chevron" /></button>}
             </div>

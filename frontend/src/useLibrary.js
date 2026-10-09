@@ -164,10 +164,10 @@ export function useLibrary() {
     if (operation.current) return false;
     operation.current = true;
     invalidate();
-    patch({ busy: true });
+    patch({ busy: true, busyAction: path });
     try {
       await request(path, { body, csrf: session.current?.csrf });
-      if (path === 'reserve' || path === 'confirm' || (path === 'wait' && body.running) ||
+      if (path === 'reserve' || path === 'confirm' || path === 'reassign' || (path === 'wait' && body.running) ||
         (path === 'wait/seat' && body.enabled))
         settling.current = { until: Date.now() / 1000 + 15, reservationId: null };
       if (path === 'release' || (path === 'wait' && !body.running) ||
@@ -193,7 +193,7 @@ export function useLibrary() {
       return false;
     } finally {
       operation.current = false;
-      patch({ busy: false, pollRevision: revision.current });
+      patch({ busy: false, busyAction: null, pollRevision: revision.current });
       await refresh();
     }
   };

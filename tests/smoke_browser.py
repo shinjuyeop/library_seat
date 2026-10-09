@@ -191,6 +191,24 @@ def main():
             assert not service.snapshot()['repeat'], 'confirmed assignment kept repeating'
             assert visible('#release').text == '좌석 반납'
             screenshot('ios-confirmed')
+            # Return and reassign through one API call, including automatic confirmation.
+            original = service.snapshot()['reservation']
+            assert driver.execute_script('return document.querySelector("#reassign").nextElementSibling.id') == 'release'
+            click('#reassign')
+            assert '자리를 잃을 수 있습니다' in visible('#confirm-dialog').text
+            screenshot('ios-reassign-confirmation')
+            click('#confirm-dialog .secondary')
+            assert service.snapshot()['reservation']['id'] == original['id']
+            click('#reassign')
+            click('#confirm-dialog .primary')
+            wait.until(lambda d: '재배정·확정 완료' in visible('#toast').text)
+            reassigned = service.snapshot()['reservation']
+            assert reassigned['id'] != original['id']
+            assert reassigned['seatId'] == original['seatId']
+            assert reassigned['state'] == 'CHARGE'
+            assert not service.snapshot()['repeat'] and not service.snapshot()['running']
+            no_overflow()
+            screenshot('ios-reassigned')
             click('#release')
             click('#confirm-dialog .primary')
             wait.until(EC.invisibility_of_element_located((By.ID, 'reservation')))
@@ -212,7 +230,7 @@ def main():
             screenshot('desktop')
             errors = [entry for entry in driver.get_log('browser') if entry['level'] == 'SEVERE']
             assert not errors, json.dumps(errors)
-            print('PASS: 320/390px and desktop layout, 16px search, tab persistence, sheet focus, booking, repeat without navigation jump, live wait additions/removals, held-seat waiting, multiple selection, switching, confirmed state, release; no browser errors')
+            print('PASS: 320/390px and desktop layout, 16px search, tab persistence, sheet focus, booking, repeat without navigation jump, live wait additions/removals, held-seat waiting, multiple selection, switching, confirmation, return-reassign-confirm, release; no browser errors')
         except Exception:
             screenshot('failure')
             raise
