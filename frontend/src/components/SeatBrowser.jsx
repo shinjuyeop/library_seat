@@ -43,8 +43,8 @@ export default function SeatBrowser({ data, selected, canAct, busy, filters, set
     own={!!data.reservation && data.reservation.roomName === seat.roomName && data.reservation.seatNo === seat.number} />;
   return <section className="seat-browser" aria-label="좌석 탐색">
     <div className="search-box"><Icon name="search" />
-      <input id="seat-search" type="search" ref={searchRef} placeholder={roomDetail ? `${roomName} 좌석 검색` : '좌석 번호 또는 열람실 검색'}
-        aria-label="좌석 번호 또는 열람실 검색" autoComplete="off" autoCapitalize="none"
+      <input id="seat-search" type="search" ref={searchRef} placeholder="좌석 번호"
+        aria-label="좌석 번호" autoComplete="off" autoCapitalize="none"
         spellCheck={false} enterKeyHint="search" value={query}
         onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }}
         onChange={event => change({ query: event.target.value, view: event.target.value.trim() ? 'all' : view })} />
