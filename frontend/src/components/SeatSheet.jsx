@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import { seatStatus, timeLabel } from '../model';
 import Icon from './Icon';
 
-export default function SeatSheet({ seat, data, selected, canAct, onClose, onReserve, onWait, onUpdateWait, onSelect, onReservation }) {
+export default function SeatSheet({ seat, data, selected, canAct, onClose, onReserve, onWait, onUpdateWait, onSelect, onReservation, onSchedule }) {
   const dialog = useRef(null);
   useEffect(() => { dialog.current?.showModal(); }, []);
   const status = seatStatus(seat);
@@ -38,6 +38,8 @@ export default function SeatSheet({ seat, data, selected, canAct, onClose, onRes
             {selected.includes(seat.key) ? '선택에서 빼기' : '여러 좌석 선택에 추가'}
           </button>
         </>}
+        {onSchedule && data.confirmationRooms?.includes(seat.roomId) && <button className="text-button" disabled={!canAct}
+          onClick={() => act(() => onSchedule(seat))}>시간 예약에 선택</button>}
       </div>
     </div>
   </dialog>;

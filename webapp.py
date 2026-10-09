@@ -15,6 +15,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from seat_service import DemoClient, LibraryError, SeatService, SettingsStore
 from library_login import LoginError
+import push_notifications as push
 
 
 def create_app(service, password, *, secret=None, secure_cookie=True):
@@ -249,6 +250,46 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
         if not isinstance(body, dict) or not all(isinstance(body.get(key), str) for key in ('id', 'state')):
             return jsonify(error='반납할 좌석을 확인해 주세요.'), 400
         account_service().release(body['id'], body['state'])
+        return jsonify(ok=True)
+
+    @app.post('/api/schedule')
+    def schedule():
+        body = request.get_json()
+        if not isinstance(body, dict):
+            return jsonify(error='시간과 좌석을 확인해 주세요.'), 400
+        account_service().set_schedule(body.get('key'), body.get('dueAt'))
+        return jsonify(ok=True)
+
+    @app.post('/api/schedule/cancel')
+    def cancel_schedule():
+        body = request.get_json()
+        if not isinstance(body, dict) or not isinstance(body.get('id'), str):
+            return jsonify(error='시간 예약을 확인해 주세요.'), 400
+        account_service().cancel_schedule(body['id'])
+        return jsonify(ok=True)
+
+    @app.get('/api/push/config')
+    def push_config():
+        return jsonify(push.configuration() if getattr(service, 'cloud', False) else {'configured': False, 'publicKey': ''})
+
+    @app.post('/api/push/<action>')
+    def push_action(action):
+        body = request.get_json()
+        if not isinstance(body, dict) or action not in {'status', 'subscribe', 'unsubscribe', 'test'}:
+            return jsonify(error='알림 설정을 확인해 주세요.'), 400
+        if not getattr(service, 'cloud', False):
+            return jsonify(error='푸시 알림은 배포된 웹앱에서 사용할 수 있습니다.'), 409
+        scoped = account_service()
+        if action == 'status':
+            return jsonify(scoped.push_status(body.get('endpoint')))
+        if throttle('push-' + action, 10, 60):
+            return jsonify(error='잠시 후 알림 설정을 다시 시도해 주세요.'), 429
+        if action == 'subscribe':
+            scoped.subscribe_push(body.get('subscription'), body.get('preferences'))
+        elif action == 'unsubscribe':
+            scoped.unsubscribe_push(body.get('endpoint'))
+        else:
+            scoped.test_push(body.get('endpoint'))
         return jsonify(ok=True)
 
     @app.post('/api/repeat')

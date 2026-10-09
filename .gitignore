@@ -42,3 +42,4 @@ test-artifacts/
 
 # React dependencies
 node_modules/
+supabase/.temp/

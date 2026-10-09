@@ -1,6 +1,7 @@
 import { timeLabel } from '../model';
+import NotificationSettings from './NotificationSettings';
 
-export default function Settings({ data, busy, reachable, onDisconnect, onLogout }) {
+export default function Settings({ data, busy, reachable, onDisconnect, onLogout, push }) {
   return <>
     <section className="card settings-card" aria-labelledby="account-heading">
       <h2 id="account-heading">도서관 연결</h2>
@@ -11,6 +12,7 @@ export default function Settings({ data, busy, reachable, onDisconnect, onLogout
         <button id="logout" className="text-button" disabled={busy || !reachable} onClick={onLogout}>로그아웃</button>
       </div>
     </section>
+    {push && <NotificationSettings push={push} busy={busy} reachable={reachable} />}
     <section className="card help-card" aria-labelledby="guide-heading"><h2 id="guide-heading">이용 안내</h2>
       <ul><li><strong>도착 후 배정 확정</strong><p>내 좌석의 배정 확정 버튼을 이용하세요. 버튼이 없는 열람실은 공식 앱에서 NFC 인증을 진행해 주세요.</p></li>
         <li><strong>자동 예약은 화면을 닫아도 계속</strong><p>중지하려면 내 좌석에서 대기를 끄세요. 로그아웃해도 대기는 유지됩니다.</p></li>

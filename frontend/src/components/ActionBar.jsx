@@ -2,7 +2,7 @@ import Icon from './Icon';
 
 export function Navigation({ tab, onChange }) {
   return <nav className="bottom-nav" aria-label="주요 메뉴">
-    {[['find', 'search', '좌석 찾기'], ['my', 'seat', '내 좌석'], ['settings', 'settings', '설정']].map(([key, icon, label]) =>
+    {[['find', 'search', '좌석 찾기'], ['my', 'seat', '내 좌석'], ['schedule', 'clock', '시간 예약'], ['settings', 'settings', '설정']].map(([key, icon, label]) =>
       <button key={key} id={`nav-${key}`} className={tab === key ? 'active' : ''} aria-current={tab === key ? 'page' : undefined}
         onClick={() => onChange(key)}><Icon name={icon} /><span>{label}</span></button>)}
   </nav>;

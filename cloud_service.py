@@ -11,7 +11,8 @@ import requests
 from cryptography.fernet import Fernet, InvalidToken
 
 from library_login import LoginError, login_to_library
-from seat_service import LibraryClient, LibraryError, SeatService, configured_nfc_tags, sanitize_seat_catalog
+from seat_service import LibraryClient, LibraryError, SeatService, configured_nfc_tags, sanitize_seat_catalog, schedule_window
+import push_notifications as push
 
 
 class SupabaseStore:
@@ -57,6 +58,17 @@ class SupabaseStore:
     def release(self, owner):
         self._request('POST', '/rpc/library_account_unlock', json={'p_account': self._account(), 'p_owner': owner})
 
+    def push_devices(self):
+        return self._request('GET', '/library_push_devices', params={'account_key': 'eq.' + self._account(),
+                             'select': 'id,subscription,preferences', 'limit': 3})
+
+    def put_push(self, subscription, preferences):
+        return self._request('POST', '/rpc/library_push_put', json={'p_account': self._account(),
+            'p_id': subscription['id'], 'p_subscription': subscription['encrypted'], 'p_preferences': preferences})
+
+    def delete_push(self, identifier):
+        self._request('POST', '/rpc/library_push_delete', json={'p_account': self._account(), 'p_id': identifier})
+
 
 class CloudService:
     cloud = True
@@ -99,6 +111,7 @@ class CloudService:
         state.update(document.get('state', {}))
         sanitize_seat_catalog(state)
         state['confirmationRooms'] = sorted(configured_nfc_tags())
+        state['scheduleWindow'] = schedule_window()
         state.update(cloud=True, connected=bool(document.get('credential')), autoLogin=bool(document.get('login')), schedulerLastSeen=document.get('schedulerLastSeen'))
         heartbeat = document.get('schedulerLastSeen')
         active_renewal = state.get('autoRenew') and state['autoRenew']['status'] in {'scheduled', 'retry', 'working'}
@@ -129,7 +142,14 @@ class CloudService:
             due = now + 30
         else:
             due = max(now + 1, (state['lastChecked'] or 0) + 300)
+        job = state.get('scheduledBooking')
+        if job and job['status'] in {'pending', 'working'}:
+            due = min(due, max(now + 1, job['dueAt']))
+        if any(item['delivery'] == 'pending' for item in state.get('notifications', [])):
+            due = min(due, now + 1)
         document['nextPollAt'] = due
+        document['pendingWork'] = bool((job and job['status'] in {'pending', 'working'}) or
+                                     any(item['delivery'] == 'pending' for item in state.get('notifications', [])))
 
     def login(self, username, password, *, remember=False):
         credentials = login_to_library(username, password)
@@ -163,7 +183,7 @@ class CloudService:
             class RuntimeStore:
                 def load(self):
                     return {'targets': state['targets'], 'running': state['running']}
-                def save(self, targets, running, repeat=None, repeat_control=None, auto_renew=None, renew_night_until=None):
+                def save(self, targets, running, repeat=None, repeat_control=None, auto_renew=None, renew_night_until=None, extras=None):
                     document['state'] = worker.snapshot()
                     CloudService._schedule_document(document, worker)
                     # Disarm retries before an external reservation write.
@@ -193,9 +213,13 @@ class CloudService:
                     document.pop('login', None)
                     document.pop('loginRetryAt', None)
                     action(worker)
+                elif cron and self._deliver_push(worker):
+                    pass  # Delivery has its own invocation budget; never delays a seat transaction.
                 elif cron and not worker.client and document.get('login'):
                     if time.time() >= document.get('loginRetryAt', 0):
                         self._auto_login(worker, document)
+                    if not worker.client:
+                        worker._check_scheduled()
                     # Never retry a reservation in the same invocation as reauthentication.
                 else:
                     action(worker)
@@ -266,6 +290,75 @@ class CloudService:
     def set_auto_renew(self, enabled, expected_id):
         self._execute(lambda worker: worker.set_auto_renew(enabled, expected_id))
 
+    def set_schedule(self, key, due_at):
+        self._execute(lambda worker: worker.set_schedule(key, due_at))
+
+    def cancel_schedule(self, expected_id):
+        self._execute(lambda worker: worker.cancel_schedule(expected_id))
+
+    def push_status(self, endpoint):
+        identifier = push.device_id(endpoint)
+        device = next((item for item in self.store.push_devices() if item['id'] == identifier), None)
+        return {'enabled': bool(device), 'preferences': device['preferences'] if device else push.DEFAULT_PREFERENCES}
+
+    def subscribe_push(self, subscription, preferences):
+        if not push.configuration()['configured']:
+            raise LibraryError('서버 알림 설정을 준비 중입니다.')
+        subscription, preferences = push.subscription_info(subscription), push.preferences(preferences)
+        if not self.store.put_push({'id': push.device_id(subscription['endpoint']), 'encrypted': self._encrypt(subscription)}, preferences):
+            raise LibraryError('알림은 계정당 기기 3개까지 켤 수 있습니다. 다른 기기에서 먼저 꺼 주세요.')
+
+    def unsubscribe_push(self, endpoint):
+        self.store.delete_push(push.device_id(endpoint))
+
+    def test_push(self, endpoint):
+        identifier = push.device_id(endpoint)
+        device = next((item for item in self.store.push_devices() if item['id'] == identifier), None)
+        if not device:
+            raise LibraryError('이 기기의 알림을 먼저 켜 주세요.')
+        result = push.send_notification(self._decrypt(device['subscription']), {'id': uuid.uuid4().hex,
+            'title': '테스트 알림', 'body': '도서관 좌석 알림이 연결되었습니다.', 'url': '/?tab=settings'})
+        if result == 'expired':
+            self.store.delete_push(identifier)
+        if result != 'sent':
+            raise LibraryError('알림 발송에 실패했습니다. 알림을 껐다 켠 뒤 다시 시도해 주세요.')
+
+    def _deliver_push(self, worker):
+        state = worker.snapshot()
+        job = state.get('scheduledBooking')
+        if job and job['status'] in {'pending', 'working'} and job['dueAt'] <= time.time() + 20:
+            return False
+        if state['running'] and state['interval'] == 1:
+            return False
+        if (state['repeat'] and state['repeat']['dueAt'] <= time.time() + 20) or (state['autoRenew'] and
+                state['autoRenew']['status'] in {'scheduled', 'retry'} and
+                max(state['autoRenew']['dueAt'], state['autoRenew'].get('retryAt') or 0, state['renewNightUntil'] or 0) <= time.time() + 20):
+            return False
+        pending = [item for item in state.get('notifications', []) if item['delivery'] == 'pending']
+        if not pending:
+            return False
+        item = pending[-1]
+        # Persist before external delivery: a worker crash must not cause duplicate pushes.
+        def mark(status):
+            worker._update(notifications=[{**n, 'delivery': status} if n['id'] == item['id'] else n
+                                          for n in worker.snapshot()['notifications']])
+            worker._save()
+        mark('sending')
+        sent, failed = False, False
+        try:
+            for device in self.store.push_devices():
+                if not device['preferences'].get(item['kind']) or time.time() - item['time'] > 3600:
+                    continue
+                result = push.send_notification(self._decrypt(device['subscription']), item)
+                sent |= result == 'sent'
+                failed |= result == 'failed'
+                if result == 'expired':
+                    self.store.delete_push(device['id'])
+        except LibraryError:
+            failed = True
+        mark('failed' if failed else 'sent' if sent else 'skipped')
+        return sent or failed
+
     def refresh(self):
         self._execute(lambda worker: worker.tick())
 
@@ -274,7 +367,7 @@ class CloudService:
             state = worker.snapshot()
             complete_catalog = state.get('catalogVersion') == 1
             recent_catalog = complete_catalog and time.time() - (state['lastChecked'] or 0) < 300
-            if not recent_catalog or state['running'] or state['repeat'] or state['autoRenew'] or (state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE'):
+            if not recent_catalog or state['running'] or state['repeat'] or state['autoRenew'] or state.get('scheduledBooking') or (state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE'):
                 worker.tick(targets_only=bool(state['running'] and complete_catalog),
                             reservation_only=bool(state['autoRenew'] and not state['running'] and recent_catalog))
         self._execute(poll, cron=True)

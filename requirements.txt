@@ -3,4 +3,5 @@ waitress>=3.0.2,<4
 requests>=2.32.4,<3
 selenium>=4.38,<5
 webdriver-manager>=4.0.2,<5
-cryptography>=46,<47
+cryptography==50.0.2
+pywebpush==2.5.0

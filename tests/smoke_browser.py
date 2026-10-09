@@ -14,11 +14,11 @@ from selenium import webdriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.common.by import By
 from selenium.webdriver.common.keys import Keys
-from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support.ui import WebDriverWait, Select
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from werkzeug.serving import make_server
-from seat_service import DemoClient, KST, LibraryError, SeatService, SettingsStore
+from seat_service import DemoClient, KST, LibraryError, SeatService, SettingsStore, schedule_window
 from webapp import create_app
 
 
@@ -322,6 +322,48 @@ def main():
             click('#confirm-dialog .primary')
             wait.until(EC.invisibility_of_element_located((By.ID, 'reservation')))
             assert service.snapshot()['reservation'] is None
+
+            # Register/cancel through the real UI, then execute the persisted demo job
+            # with only the service clock advanced. No provider requests are made.
+            tab('schedule')
+            fixed_evening = datetime(2026, 10, 9, 20, tzinfo=KST).timestamp()
+            fixed_morning = datetime(2026, 10, 10, 5, tzinfo=KST).timestamp()
+            with patch('seat_service.schedule_window', return_value=schedule_window(fixed_evening)):
+                driver.refresh()
+                tab('schedule')
+                Select(visible('select[aria-label="시간 예약 열람실"]')).select_by_value('102')
+                Select(visible('select[aria-label="시간 예약 좌석 번호"]')).select_by_value('102:3')
+                Select(visible('select[aria-label="예약 시간"]')).select_by_value('06:20')
+                for width in (320, 390):
+                    mobile(width)
+                    no_overflow()
+                    screenshot(f'ios-schedule-form-{width}')
+                click('.schedule-form button[type="submit"]')
+                wait.until(lambda d: service.snapshot()['scheduledBooking'] is not None)
+                visible('.schedule-summary')
+                assert service.snapshot()['reservation'] is None
+                screenshot('ios-schedule-pending')
+                click('.schedule-summary .destructive')
+                wait.until(lambda d: service.snapshot()['scheduledBooking']['status'] == 'cancelled')
+                assert service.snapshot()['reservation'] is None
+                service.set_schedule('102:3', fixed_morning)
+            with service.operation, patch('seat_service.time', wraps=time) as service_clock:
+                service_clock.time.return_value = fixed_morning
+                service.tick()
+                state = service.snapshot()
+                assert state['scheduledBooking']['status'] == 'succeeded'
+                assert state['reservation']['state'] == 'CHARGE' and state['autoRenew']
+            driver.refresh()
+            tab('schedule')
+            wait.until(lambda d: '시간 예약 완료' in visible('.schedule-summary').text)
+            screenshot('ios-schedule-success')
+            with service.operation:
+                current = service.snapshot()['reservation']
+                service.release(current['id'], current['state'])
+            tab('settings')
+            visible('#notification-heading')
+            no_overflow()
+            screenshot('ios-notification-settings')
 
             tab('find')
             query('')

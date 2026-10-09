@@ -42,6 +42,8 @@ const initialData = () => ({
   repeat: null,
   autoRenew: null,
   confirmationRooms: [102],
+  scheduledBooking: null,
+  scheduleWindow: { open: true, date: '2026-10-10', closesAt: Date.parse('2026-10-10T05:00:00+09:00') / 1000 },
   events: [],
   interval: 30,
   cloud: true,
@@ -139,6 +141,8 @@ beforeEach(() => {
       data.repeat = null;
     }
     if (path === 'logout') signedIn = false;
+    if (path === 'schedule') data.scheduledBooking = { ...body, id: 'test-job', status: 'pending', roomName: '1열람실 A', number: body.key.split(':')[1], roomId: 102 };
+    if (path === 'schedule/cancel') data.scheduledBooking = { ...data.scheduledBooking, status: 'cancelled', result: '시간 예약을 취소했습니다.' };
     return response({ ok: true });
   });
   vi.stubGlobal('fetch', fakeFetch);
@@ -170,6 +174,43 @@ const writes = (path) =>
   );
 
 describe('React app with the existing account API', () => {
+  it('registers and cancels a future occupied seat without booking immediately', async () => {
+    await openApp();
+    fireEvent.click(screen.getByRole('button', { name: '시간 예약', exact: true }));
+    const times = screen.getByRole('combobox', { name: '예약 시간' });
+    expect(times.options).toHaveLength(42);
+    expect(times.options[0].value).toBe('05:00');
+    expect(times.options[41].value).toBe('11:50');
+    expect(screen.getByRole('combobox', { name: '시간 예약 열람실' }).options).toHaveLength(1);
+    fireEvent.change(times, { target: { value: '06:20' } });
+    fireEvent.change(screen.getByRole('combobox', { name: '시간 예약 좌석 번호' }), { target: { value: '102:1' } });
+    fireEvent.click(screen.getByRole('button', { name: '시간 예약 등록' }));
+    await screen.findByRole('heading', { name: '예약 대기 중' });
+    expect(writes('schedule')[0].body).toEqual({ key: '102:1', dueAt: Date.parse('2026-10-10T06:20:00+09:00') / 1000 });
+    expect(writes('reserve')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: '시간 예약 취소' }));
+    await screen.findByRole('heading', { name: '시간 예약 취소됨' });
+    expect(writes('schedule/cancel')[0].body).toEqual({ id: 'test-job' });
+    expect(writes('release')).toHaveLength(0);
+  });
+
+  it('disables schedule registration outside the server registration window', async () => {
+    data.scheduleWindow.open = false;
+    await openApp();
+    fireEvent.click(screen.getByRole('button', { name: '시간 예약', exact: true }));
+    expect(screen.getByRole('button', { name: '시간 예약 등록' }).disabled).toBe(true);
+    expect(screen.getByText('등록·변경은 전날 낮 12시부터 당일 오전 5시 전까지 가능합니다.')).toBeTruthy();
+  });
+
+  it('selects a future seat from its details without booking', async () => {
+    await openApp();
+    fireEvent.click(seat('1열람실 A 1번 1분 상세 보기'));
+    fireEvent.click(screen.getByRole('button', { name: '시간 예약에 선택' }));
+    expect(screen.getByRole('heading', { name: '시간 예약' })).toBeTruthy();
+    expect(screen.getByRole('combobox', { name: '시간 예약 좌석 번호' }).value).toBe('102:1');
+    expect(writes('reserve')).toHaveLength(0);
+  });
+
   it('shows room availability first and supports room back and browser forward', async () => {
     await openApp();
     fireEvent.click(screen.getByRole('button', { name: '전체 좌석', exact: true }));

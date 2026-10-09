@@ -9,12 +9,16 @@ import ActionBar, { Navigation } from './components/ActionBar';
 import WaitingList from './components/WaitingList';
 import Settings from './components/Settings';
 import Icon from './components/Icon';
+import ScheduledBooking from './components/ScheduledBooking';
+import usePushNotifications from './usePushNotifications';
 
-const titles = { find: '좌석 찾기', my: '내 좌석', settings: '설정' };
+const titles = { find: '좌석 찾기', my: '내 좌석', schedule: '시간 예약', settings: '설정' };
 
 export default function App() {
   const library = useLibrary();
   const { session, data, selected, reachable, busy, dispatch, mutate } = library;
+  const push = usePushNotifications(session);
+  const [scheduleDraft, setScheduleDraft] = useState(null);
   const [tab, setTab] = useState('find');
   const [selecting, setSelecting] = useState(false);
   const [inspectedKey, setInspectedKey] = useState(null);
@@ -29,6 +33,15 @@ export default function App() {
     navigated.current = true;
     setTab(next);
   }, []);
+  useEffect(() => {
+    const target = new URLSearchParams(window.location.search).get('tab');
+    if (session?.authorized && titles[target]) goTo(target);
+  }, [session?.authorized, goTo]);
+  useEffect(() => {
+    const open = event => { if (event.data?.type === 'open-tab' && titles[event.data.tab]) goTo(event.data.tab); };
+    navigator.serviceWorker?.addEventListener('message', open);
+    return () => navigator.serviceWorker?.removeEventListener('message', open);
+  }, [goTo]);
   useLayoutEffect(() => {
     if (navigated.current) {
       window.scrollTo({ top: scrolls.current[tab] || 0, behavior: 'instant' });
@@ -67,6 +80,7 @@ export default function App() {
       setConfirmation(null);
       setInspectedKey(null);
       setSelecting(false);
+      setScheduleDraft(null);
       setFilters(defaultFilters);
       scrolls.current = {};
       currentTab.current = 'find';
@@ -189,15 +203,20 @@ export default function App() {
               {!data.running && waitingList}
               {data.reservation && <button className="browse-link" onClick={() => goTo('find')}>다른 좌석 찾아보기<Icon name="chevron" /></button>}
             </div>
+            <div hidden={tab !== 'schedule'} id="panel-schedule" className="detail-page">
+              <ScheduledBooking key={scheduleDraft?.key || data.scheduledBooking?.id || 'new'} data={data} busy={busy} reachable={reachable} draft={scheduleDraft}
+                onSave={async body => { const ok = await mutate('schedule', body, { message: '시간 예약을 저장했습니다.' }); if (ok) setScheduleDraft(null); return ok; }}
+                onCancel={id => mutate('schedule/cancel', { id }, { message: '시간 예약을 취소했습니다.' })} />
+            </div>
             <div hidden={tab !== 'settings'} id="panel-settings" className="detail-page">
               <div className="status-line"><span id="status-badge" className={'status-badge' + (status !== '연결됨' ? ' waiting' : '')}>{status}</span></div>
               {!data.connected && !data.demo && <ConnectionCard data={data} busy={busy} onReconnect={library.reconnect}
                 onConnect={body => mutate('connect', body, { message: '도서관 로그인을 시작했습니다.' })} />}
-              <Settings data={data} busy={busy} reachable={reachable}
+              <Settings data={data} busy={busy || push.loading} reachable={reachable} push={push}
                 onDisconnect={() => confirm('도서관 연결을 해제할까요?', '서버의 자동 예약을 중지하고 저장된 도서관 연결을 삭제합니다. 이미 배정된 좌석은 반납하지 않습니다.',
                   () => mutate('disconnect', {}, { resetSelection: true }), '연결 해제')}
-                onLogout={() => confirm('웹앱에서 로그아웃할까요?', '자동 예약 대기와 임시배정 자동 재예약은 서버에서 계속됩니다. 종료하려면 먼저 해당 기능을 꺼 주세요.',
-                  () => mutate('logout', {}), '로그아웃')} />
+                onLogout={() => confirm('웹앱에서 로그아웃할까요?', '시간 예약과 자동 예약·연장은 서버에서 계속됩니다. 이 기기의 알림은 꺼집니다. 자동 실행을 종료하려면 먼저 해당 기능을 꺼 주세요.',
+                  async () => { try { await push.disconnect(); await mutate('logout', {}); } catch (error) { dispatch({ type: 'patch', patch: { toast: error.message } }); } }, '로그아웃')} />
             </div>
           </div>}
       </main>
@@ -207,6 +226,7 @@ export default function App() {
     {library.toast && <div id="toast" role="status">{library.toast}</div>}
     {ready && inspectedSeat && <SeatSheet key={inspectedSeat.key} seat={inspectedSeat} data={data} selected={selected} canAct={canAct}
       onClose={() => setInspectedKey(null)} onReserve={reserve} onWait={startWait} onUpdateWait={updateWait} onReservation={() => goTo('my')}
+      onSchedule={seat => { setScheduleDraft(seat); goTo('schedule'); }}
       onSelect={key => { toggle(key); setSelecting(true); }} />}
     <dialog id="confirm-dialog" ref={dialog} aria-labelledby="confirm-title" onClose={() => setConfirmation(null)}>
       <h2 id="confirm-title">{confirmation?.title}</h2><p>{confirmation?.message}</p>

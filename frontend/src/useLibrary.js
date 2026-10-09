@@ -5,6 +5,8 @@ import { initialModel, libraryReducer } from './model';
 export function pollDelay(data, now = Date.now() / 1000, settlingUntil = 0) {
   if (!data) return 5000;
   if (now < settlingUntil) return 1000;
+  if (data.scheduledBooking?.status === 'working') return 1000;
+  if (data.scheduledBooking?.status === 'pending') return Math.max(1000, Math.min(5000, (data.scheduledBooking.dueAt - now - 10) * 1000));
   if (data.running) return data.interval === 1 ? 1000 : 2000;
   if (data.repeat) {
     const untilFastPoll = (data.repeat.dueAt - now - 10) * 1000;
@@ -125,7 +127,7 @@ export function useLibrary() {
       window.removeEventListener('focus', resume);
       window.removeEventListener('offline', offline);
     };
-  }, [refresh, patch, model.pollRevision, model.data?.running, model.data?.interval, model.data?.repeat?.dueAt, model.data?.autoRenew?.dueAt, model.data?.autoRenew?.status]);
+  }, [refresh, patch, model.pollRevision, model.data?.running, model.data?.interval, model.data?.repeat?.dueAt, model.data?.autoRenew?.dueAt, model.data?.autoRenew?.status, model.data?.scheduledBooking?.dueAt, model.data?.scheduledBooking?.status]);
 
   useEffect(() => {
     if (!model.toast) return;

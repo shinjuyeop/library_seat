@@ -19,11 +19,12 @@ const assets = (Array.isArray(result) ? result : [result])
   .flatMap((item) => item.output)
   .filter((item) => /\.(js|css)$/.test(item.fileName))
   .map((item) => '/' + item.fileName);
+const template = await readFile('frontend/sw.template.js', 'utf8');
 const version = createHash('sha256')
   .update(assets.join('\n'))
+  .update(template)
   .digest('hex')
   .slice(0, 12);
-const template = await readFile('frontend/sw.template.js', 'utf8');
 await writeFile(
   'public/sw.js',
   template

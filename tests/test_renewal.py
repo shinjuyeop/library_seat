@@ -386,6 +386,8 @@ class RenewalCloudTests(unittest.TestCase):
         self.clients['bob'].renew_reservation.assert_not_called()
         seats.assert_not_called()  # A renewal poll need not reload all six room catalogs.
         self.assertEqual(alice.snapshot()['reservation']['renewableCnt'], 2)
+        self.assertEqual(alice.store.read()['nextPollAt'], NOON + 1)  # Deliver the queued renewal result first.
+        alice.tick()
         self.assertEqual(alice.store.read()['nextPollAt'], NOON + 30)
         self.assertNotIn(TAG, json.dumps(alice.store.read()))
 

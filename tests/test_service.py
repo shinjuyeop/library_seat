@@ -632,13 +632,26 @@ class ApiTests(ServiceFixture):
 
 
 class FakeCloudStore:
-    def __init__(self, accounts=None, account=None, locks=None):
+    def __init__(self, accounts=None, account=None, locks=None, devices=None):
         self.accounts = {} if accounts is None else accounts
         self.account = account
         self.locks = {} if locks is None else locks
+        self.devices = {} if devices is None else devices
 
     def for_account(self, account):
-        return FakeCloudStore(self.accounts, account, self.locks)
+        return FakeCloudStore(self.accounts, account, self.locks, self.devices)
+
+    def push_devices(self):
+        return [copy.deepcopy(device) for device in self.devices.values() if device['account'] == self.account]
+
+    def put_push(self, subscription, preferences):
+        self.devices[subscription['id']] = {'id': subscription['id'], 'subscription': subscription['encrypted'],
+                                          'preferences': preferences, 'account': self.account}
+        return True
+
+    def delete_push(self, identifier):
+        if self.devices.get(identifier, {}).get('account') == self.account:
+            self.devices.pop(identifier)
 
     def ensure(self):
         self.accounts.setdefault(self.account, {})
