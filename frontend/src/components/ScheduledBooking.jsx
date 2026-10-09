@@ -29,10 +29,10 @@ export default function ScheduledBooking({ data, busy, reachable, draft, onSave,
   };
   return <>
     {job && <section className={'card schedule-summary ' + (job.status === 'failed' ? 'schedule-failed' : '')} aria-labelledby="scheduled-heading">
-      <div className="section-heading"><h2 id="scheduled-heading">{pending ? '예약 대기 중' : working ? '예약 실행 중' : job.status === 'succeeded' ? '시간 예약 완료' : job.status === 'failed' ? '시간 예약 실패' : '시간 예약 취소됨'}</h2><Icon name="clock" /></div>
+      <div className="section-heading"><h2 id="scheduled-heading">{pending ? job.retryAt ? '예약 재시도 중' : '예약 대기 중' : working ? '예약 실행 중' : job.status === 'succeeded' ? '시간 예약 완료' : job.status === 'failed' ? '시간 예약 실패' : '시간 예약 취소됨'}</h2><Icon name="clock" /></div>
       <p className="schedule-date">{formatDate(job.dueAt)}</p>
       <strong>{job.roomName} · {job.number}번</strong>
-      <p className="fine" role="status">{pending ? '좌석 예약 → 배정확정 → 자동 연장' : working ? `${job.stage} 중…` : `${job.status === 'failed' ? job.stage + ' · ' : ''}${job.result}`}</p>
+      <p className="fine" role="status">{pending ? job.retryAt ? job.result : '좌석 예약 → 배정확정 → 자동 연장' : working ? `${job.stage} 중…` : `${job.status === 'failed' ? job.stage + ' · ' : ''}${job.result}`}</p>
       {pending && <div className="schedule-actions"><button className="secondary" disabled={busy || !reachable || !window?.open} onClick={() => setEditing(!editing)}>{editing ? '변경 닫기' : '변경'}</button>
         <button className="text-button destructive" disabled={busy || !reachable} onClick={() => onCancel(job.id)}>시간 예약 취소</button></div>}
     </section>}
@@ -53,7 +53,7 @@ export default function ScheduledBooking({ data, busy, reachable, draft, onSave,
     </section>}
     {!window?.open && <p className="notice">등록·변경은 전날 낮 12시부터 당일 오전 5시 전까지 가능합니다.</p>}
     <div className="schedule-guide">
-      <p>앱을 닫아도 예약 시간에 한 번 실행합니다. 실패하면 종료하며, 결과는 이 화면과 알림에서 확인할 수 있어요.</p>
+      <p>앱을 닫아도 예약 시간에 실행합니다. 05:00 예약은 명확히 거절되고 좌석이 비어 있으면 05:01까지 3초 간격으로 재시도합니다. 결과는 이 화면과 알림에서 확인할 수 있어요.</p>
       <p>실행할 때 이용 중인 좌석이 있으면 현재 좌석을 유지하고 시간 예약은 종료합니다. 예약을 시작하면 기존 좌석 대기는 종료됩니다.</p>
       <p>자동 연장은 잔여 1시간 59분에 실행됩니다. 연장 횟수가 0이면 반납 후 재배정하므로 자리를 잃을 수 있어요.</p>
     </div>

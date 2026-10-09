@@ -13,7 +13,7 @@ from pywebpush import WebPushException
 
 from cloud_service import CloudService, SupabaseStore
 import push_notifications as push
-from seat_service import DemoClient, KST, LibraryError, SeatService, schedule_window
+from seat_service import DemoClient, KST, LibraryClient, LibraryError, SeatService, schedule_window
 from test_service import FakeCloudStore, ServiceFixture
 from webapp import create_app
 
@@ -77,6 +77,236 @@ class ScheduleTests(ServiceFixture):
         self.assertEqual(len(state['notifications']), 1)
         self.service.tick()
         self.reserve.assert_called_once_with(102003)
+
+    def start_opening_retry(self):
+        self.register()
+        self.clock.return_value = MORNING
+        self.reserve.side_effect = LibraryError('not open yet', rejected=True)
+        self.service.tick()
+        return self.service.snapshot()['scheduledBooking']
+
+    def test_opening_retries_only_after_three_seconds_across_restart_then_confirms_once(self):
+        job = self.start_opening_retry()
+        self.assertEqual((job['status'], job['attempts'], job['retryAt']), ('pending', 1, MORNING + 3))
+        self.assertEqual(self.service.snapshot()['notifications'], [])
+        self.assertFalse(self.service.quiet_notifications)
+        self.clock.return_value = MORNING + 2
+        self.service = SeatService(self.store, client=self.client, nfc_tags=self.service.nfc_tags)
+        self.service.tick()
+        self.reserve.assert_called_once()
+        self.clock.return_value = MORNING + 3
+        self.service.tick()
+        self.assertEqual(self.reserve.call_count, 2)
+        self.assertEqual(self.store.load()['scheduledBooking']['retryAt'], MORNING + 6)
+        self.clock.return_value = MORNING + 5
+        self.service.tick()
+        self.assertEqual(self.reserve.call_count, 2)
+        self.reserve.side_effect = None
+        self.client.confirm_reservation = Mock(wraps=self.client.confirm_reservation)
+        self.clock.return_value = MORNING + 6
+        self.service.tick()
+        self.service.tick()
+        state = self.service.snapshot()
+        self.assertEqual(state['scheduledBooking']['status'], 'succeeded')
+        self.assertEqual(state['scheduledBooking']['attempts'], 3)
+        self.assertEqual(state['autoRenew']['status'], 'scheduled')
+        self.assertEqual(len(state['notifications']), 1)
+        self.assertEqual(self.reserve.call_count, 3)
+        self.client.confirm_reservation.assert_called_once()
+        self.release.assert_not_called()
+
+    def test_opening_retries_stop_at_exactly_five_oh_one_with_one_final_notification(self):
+        self.start_opening_retry()
+        for elapsed in range(3, 60, 3):
+            self.clock.return_value = MORNING + elapsed
+            self.service.tick()
+        self.assertEqual(self.reserve.call_count, 20)
+        self.assertEqual(self.service.snapshot()['notifications'], [])
+        self.clock.return_value = MORNING + 60
+        self.service.tick()
+        self.clock.return_value += 60
+        self.service.tick()
+        state = self.service.snapshot()
+        self.assertEqual(state['scheduledBooking']['status'], 'failed')
+        self.assertIn('05:01', state['scheduledBooking']['result'])
+        self.assertEqual(self.reserve.call_count, 20)
+        self.assertEqual(len(state['notifications']), 1)
+
+    def test_opening_job_never_starts_a_new_request_after_the_window(self):
+        self.register()
+        self.clock.return_value = MORNING + 60
+        self.service.tick()
+        self.reserve.assert_not_called()
+        self.assertEqual(self.service.snapshot()['scheduledBooking']['status'], 'failed')
+
+    def test_existing_saved_five_am_job_without_new_fields_gets_the_retry_behavior(self):
+        job = self.register()
+        job.pop('retryAt')
+        job.pop('attempts')
+        self.service._update(scheduledBooking=job)
+        self.service._save()
+        self.service = SeatService(self.store, client=self.client, nfc_tags=self.service.nfc_tags)
+        self.reserve.side_effect = LibraryError('not open yet', rejected=True)
+        self.clock.return_value = MORNING
+        self.service.tick()
+        saved = self.store.load()['scheduledBooking']
+        self.assertEqual((saved['status'], saved['retryAt'], saved['attempts']), ('pending', MORNING + 3, 1))
+
+    def test_last_rejection_waits_only_until_the_window_end(self):
+        self.register()
+        self.clock.return_value = MORNING + 59
+        self.reserve.side_effect = LibraryError('not open yet', rejected=True)
+        self.service.tick()
+        self.assertEqual(self.service.snapshot()['scheduledBooking']['retryAt'], MORNING + 60)
+        self.clock.return_value += 1
+        self.service.tick()
+        self.reserve.assert_called_once()
+        self.assertEqual(self.service.snapshot()['scheduledBooking']['status'], 'failed')
+
+    def test_slow_preflight_cannot_send_a_late_reservation_request(self):
+        self.register()
+        seats = self.client.seats
+        def slow(room):
+            self.clock.return_value = MORNING + 60
+            return seats(room)
+        self.client.seats = slow
+        self.clock.return_value = MORNING
+        self.service.tick()
+        self.reserve.assert_not_called()
+        self.assertEqual(self.service.snapshot()['scheduledBooking']['status'], 'failed')
+
+    def test_success_before_deadline_can_finish_confirmation_after_deadline(self):
+        self.register()
+        reserve = self.reserve._mock_wraps
+        def slow(seat):
+            reserve(seat)
+            self.clock.return_value = MORNING + 62
+        self.reserve.side_effect = slow
+        self.clock.return_value = MORNING + 59
+        self.service.tick()
+        self.assertEqual(self.service.snapshot()['scheduledBooking']['status'], 'succeeded')
+        self.reserve.assert_called_once()
+
+    def test_seat_taken_between_retries_stops_without_a_second_reservation(self):
+        self.start_opening_retry()
+        seats = self.client.seats
+        self.client.seats = lambda room: [{**seat, 'isOccupied': True} if str(seat['code']) == '3' else seat
+                                         for seat in seats(room)]
+        self.clock.return_value = MORNING + 3
+        self.service.tick()
+        self.reserve.assert_called_once()
+        self.assertEqual(self.service.snapshot()['scheduledBooking']['status'], 'failed')
+
+    def test_seat_already_taken_after_rejection_is_not_queued_for_retry(self):
+        self.register()
+        seats = self.client.seats
+        def reject(_):
+            self.client.seats = lambda room: [{**seat, 'isOccupied': True} if str(seat['code']) == '3' else seat
+                                             for seat in seats(room)]
+            raise LibraryError('occupied', rejected=True)
+        self.reserve.side_effect = reject
+        self.clock.return_value = MORNING
+        self.service.tick()
+        self.reserve.assert_called_once()
+        self.assertEqual(self.service.snapshot()['scheduledBooking']['status'], 'failed')
+
+    def test_changed_seat_identifier_stops_a_pending_retry(self):
+        self.start_opening_retry()
+        seats = self.client.seats
+        self.client.seats = lambda room: [{**seat, 'seatId': 999999, 'id': 999999} if str(seat['code']) == '3' else seat
+                                         for seat in seats(room)]
+        self.clock.return_value = MORNING + 3
+        self.service.tick()
+        self.reserve.assert_called_once()
+        self.assertEqual(self.service.snapshot()['scheduledBooking']['status'], 'failed')
+
+    def test_another_booking_during_retry_is_preserved_without_return_or_rebooking(self):
+        self.start_opening_retry()
+        self.reserve._mock_wraps(102030)  # Simulate a booking made in the official app.
+        current = copy.deepcopy(self.client.current)
+        self.clock.return_value = MORNING + 3
+        self.service.tick()
+        self.assertEqual(self.client.current, current)
+        self.reserve.assert_called_once()
+        self.release.assert_not_called()
+        self.assertEqual(self.service.snapshot()['scheduledBooking']['status'], 'failed')
+
+    def test_expired_login_and_unclassified_error_never_retry(self):
+        for error in (LibraryError('login expired', expired=True, rejected=True), LibraryError('unknown response')):
+            with self.subTest(error=str(error)):
+                self.service.client = self.client
+                self.clock.return_value = EVENING
+                self.register()
+                self.reserve.reset_mock()
+                self.reserve.side_effect = error
+                self.clock.return_value = MORNING
+                self.service.tick()
+                self.clock.return_value += 3
+                self.service.tick()
+                self.reserve.assert_called_once()
+                self.assertEqual(self.service.snapshot()['scheduledBooking']['status'], 'failed')
+
+    def test_timeout_with_verified_booking_confirms_without_repeating_reserve(self):
+        self.register()
+        reserve = self.reserve._mock_wraps
+        def timeout(seat):
+            reserve(seat)
+            raise LibraryError('timeout', uncertain=True)
+        self.reserve.side_effect = timeout
+        self.client.confirm_reservation = Mock(wraps=self.client.confirm_reservation)
+        self.clock.return_value = MORNING
+        self.service.tick()
+        self.service.tick()
+        self.assertEqual(self.service.snapshot()['scheduledBooking']['status'], 'succeeded')
+        self.reserve.assert_called_once()
+        self.client.confirm_reservation.assert_called_once()
+
+    def test_reconciliation_read_failure_never_repeats_unknown_reservation(self):
+        self.register()
+        read = self.client.reservation
+        self.client.reservation = Mock(side_effect=[None, LibraryError('read failed')])
+        self.reserve.side_effect = LibraryError('timeout', uncertain=True, rejected=True)
+        self.clock.return_value = MORNING
+        self.service.tick()
+        self.client.reservation = read
+        self.service.tick()
+        self.reserve.assert_called_once()
+        self.assertEqual(self.service.snapshot()['scheduledBooking']['status'], 'failed')
+
+    def test_retry_can_be_cancelled_after_registration_window_closes(self):
+        job = self.start_opening_retry()
+        self.service.cancel_schedule(job['id'])
+        self.clock.return_value += 3
+        self.service.tick()
+        self.reserve.assert_called_once()
+        self.assertEqual(self.service.snapshot()['scheduledBooking']['status'], 'cancelled')
+
+    def test_other_morning_slots_keep_single_attempt_behavior(self):
+        self.register(due=MORNING + 600)
+        self.clock.return_value = MORNING + 600
+        self.reserve.side_effect = LibraryError('denied', rejected=True)
+        self.service.tick()
+        self.clock.return_value += 3
+        self.service.tick()
+        self.reserve.assert_called_once()
+        self.assertEqual(self.service.snapshot()['scheduledBooking']['status'], 'failed')
+
+    def test_provider_rejection_classification_requires_a_clear_negative_response(self):
+        client = LibraryClient('synthetic-token')
+        self.addCleanup(client.close)
+        for status, success, code, rejected in ((200, False, 'closed', True), (400, False, 'closed', True),
+                (409, False, 'occupied', True), (422, False, 'denied', True),
+                (200, 'false', 'closed', False), (200, None, 'closed', False),
+                (200, False, 'session.expired', False), (429, False, 'rate.limited', False),
+                (500, False, 'server.error', False), (403, False, 'forbidden', False)):
+            with self.subTest(status=status, success=success, code=code):
+                response = Mock(status_code=status)
+                response.json.return_value = {'success': success, 'code': code, 'private': 'never-expose-me'}
+                client.session.request = Mock(return_value=response)
+                with self.assertRaises(LibraryError) as raised:
+                    client.reserve(102003)
+                self.assertEqual(raised.exception.rejected, rejected)
+                self.assertNotIn('never-expose-me', str(raised.exception))
 
     def test_no_early_booking_login_read_only_and_cancel(self):
         job = self.register()
@@ -314,6 +544,44 @@ class PushTests(unittest.TestCase):
 
 
 class ScheduledCloudTests(unittest.TestCase):
+    def test_retry_deadline_and_attempts_persist_between_leased_cloud_invocations(self):
+        store = FakeCloudStore()
+        root = CloudService(store, Fernet.generate_key())
+        alice = root.for_account('a' * 64)
+        alice.store.ensure()
+        store.accounts[alice.store.account]['credential'] = alice._encrypt({'token': 'synthetic', 'cookies': {}})
+        client = DemoClient()
+        client.reserve = Mock(wraps=client.reserve)
+        with patch('cloud_service.LibraryClient', return_value=client), \
+                patch.dict('os.environ', {'LIBRARY_NFC_TAGS': '{"102":"0123456789ABCDEF"}'}), \
+                patch('seat_service.time.time', return_value=EVENING) as clock:
+            alice.set_schedule('102:3', MORNING)
+            client.reserve.side_effect = LibraryError('not open yet', rejected=True)
+            clock.return_value = MORNING
+            alice.tick()
+            self.assertEqual(alice.store.read()['nextPollAt'], MORNING + 3)
+            self.assertTrue(alice.store.read()['pendingWork'])
+            self.assertEqual(alice.snapshot()['notifications'], [])
+            second_device = root.for_account(alice.store.account)
+            clock.return_value = MORNING + 2
+            second_device.tick()
+            client.reserve.assert_called_once()
+            self.assertEqual(alice.store.read()['nextPollAt'], MORNING + 3)
+            second_device._execute(lambda worker: worker.tick(allow_actions=False))
+            self.assertEqual(alice.snapshot()['scheduledBooking']['retryAt'], MORNING + 3)
+            client.reserve.assert_called_once()
+            alice.store.claim('another invocation')
+            clock.return_value = MORNING + 3
+            with self.assertRaises(LibraryError):
+                second_device.tick()
+            client.reserve.assert_called_once()
+            alice.store.release('another invocation')
+            client.reserve.side_effect = None
+            second_device.tick()
+            self.assertEqual(alice.snapshot()['scheduledBooking']['status'], 'succeeded')
+            self.assertEqual(alice.snapshot()['scheduledBooking']['attempts'], 2)
+            self.assertEqual(client.reserve.call_count, 2)
+
     def test_cloud_hydration_lease_deadline_and_account_isolation(self):
         store = FakeCloudStore()
         root = CloudService(store, Fernet.generate_key())

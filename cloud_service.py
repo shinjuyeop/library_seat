@@ -11,7 +11,7 @@ import requests
 from cryptography.fernet import Fernet, InvalidToken
 
 from library_login import LoginError, login_to_library
-from seat_service import LibraryClient, LibraryError, SeatService, configured_nfc_tags, sanitize_seat_catalog, schedule_window
+from seat_service import LibraryClient, LibraryError, SeatService, configured_nfc_tags, sanitize_seat_catalog, schedule_window, scheduled_check_at
 import push_notifications as push
 
 
@@ -137,10 +137,10 @@ class CloudService:
         elif state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE':
             due = now + 30
         else:
-            due = max(now + 1, (state['lastChecked'] or 0) + 300)
+            due = max(now + 1, (state['lastChecked'] or now) + 300)
         job = state.get('scheduledBooking')
         if job and job['status'] in {'pending', 'working'}:
-            due = min(due, max(now + 1, job['dueAt']))
+            due = min(due, max(now + 1, scheduled_check_at(job)))
         if any(item['delivery'] == 'pending' for item in state.get('notifications', [])):
             due = min(due, now + 1)
         document['nextPollAt'] = due
@@ -325,7 +325,7 @@ class CloudService:
     def _deliver_push(self, worker):
         state = worker.snapshot()
         job = state.get('scheduledBooking')
-        if job and job['status'] in {'pending', 'working'} and job['dueAt'] <= time.time() + 20:
+        if job and job['status'] in {'pending', 'working'} and scheduled_check_at(job) <= time.time() + 20:
             return False
         if state['running'] and state['interval'] == 1:
             return False

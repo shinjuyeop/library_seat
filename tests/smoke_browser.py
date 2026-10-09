@@ -374,9 +374,24 @@ def main():
                 service.set_schedule('102:3', fixed_morning)
             with service.operation, patch('seat_service.time', wraps=time) as service_clock:
                 service_clock.time.return_value = fixed_morning
+                with patch.object(service.client, 'reserve', side_effect=LibraryError('not open yet', rejected=True)) as rejected:
+                    service.tick()
+                    state = service.snapshot()
+                    assert state['scheduledBooking']['status'] == 'pending'
+                    assert state['scheduledBooking']['retryAt'] == fixed_morning + 3
+                    driver.refresh()
+                    tab('schedule')
+                    wait.until(lambda d: '예약 재시도 중' in visible('.schedule-summary').text)
+                    no_overflow()
+                    screenshot('ios-schedule-opening-retry')
+                    service_clock.time.return_value = fixed_morning + 2
+                    service.tick()
+                    rejected.assert_called_once()
+                service_clock.time.return_value = fixed_morning + 3
                 service.tick()
                 state = service.snapshot()
                 assert state['scheduledBooking']['status'] == 'succeeded'
+                assert state['scheduledBooking']['attempts'] == 2
                 assert state['reservation']['state'] == 'CHARGE' and state['autoRenew']
             driver.refresh()
             tab('schedule')

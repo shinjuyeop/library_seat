@@ -6,7 +6,7 @@ export function pollDelay(data, now = Date.now() / 1000, settlingUntil = 0) {
   if (!data) return 5000;
   if (now < settlingUntil) return 1000;
   if (data.scheduledBooking?.status === 'working') return 1000;
-  if (data.scheduledBooking?.status === 'pending') return Math.max(1000, Math.min(5000, (data.scheduledBooking.dueAt - now - 10) * 1000));
+  if (data.scheduledBooking?.status === 'pending') return Math.max(1000, Math.min(5000, (Math.max(data.scheduledBooking.dueAt, data.scheduledBooking.retryAt || 0) - now - 10) * 1000));
   if (data.running) return data.interval === 1 ? 1000 : 2000;
   if (data.autoRenew?.status === 'working') return 1000;
   if (data.autoRenew?.status === 'scheduled')

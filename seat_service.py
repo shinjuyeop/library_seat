@@ -25,6 +25,8 @@ MAX_TARGETS = 50
 MAX_FAVORITES = 100
 ACTIVE_STATES = {'TEMP_CHARGE', 'CHARGE', 'IN_USE'}
 AUTO_RENEW_REMAINING = 119 * 60
+OPENING_BOOKING_RETRY_SECONDS = 3
+OPENING_BOOKING_WINDOW_SECONDS = 60
 KST = timezone(timedelta(hours=9))
 UNAVAILABLE_3B_SEATS = {149, 150, 207, 279, 325, 326, 347, 348}
 
@@ -93,6 +95,15 @@ def schedule_window(now=None):
             'opensAt': (morning - timedelta(hours=17)).timestamp(), 'closesAt': morning.timestamp()}
 
 
+def opening_booking(job):
+    due = datetime.fromtimestamp(job['dueAt'], KST)
+    return due.hour == 5 and due.minute == 0 and due.second == 0
+
+
+def scheduled_check_at(job):
+    return max(job['dueAt'], job.get('retryAt') or 0)
+
+
 def sanitize_seat_catalog(state):
     """Also filter persisted catalogs before their next provider refresh."""
     state['seats'] = [seat for seat in state.get('seats', []) if valid_seat_key(seat.get('key'))]
@@ -113,11 +124,12 @@ def sanitize_seat_catalog(state):
 
 
 class LibraryError(Exception):
-    def __init__(self, message, *, expired=False, uncertain=False, operating_hours=False):
+    def __init__(self, message, *, expired=False, uncertain=False, operating_hours=False, rejected=False):
         super().__init__(message)
         self.expired = expired
         self.uncertain = uncertain
         self.operating_hours = operating_hours
+        self.rejected = rejected
 
 
 def normalize_reservation(data):
@@ -202,7 +214,10 @@ class LibraryClient:
             expired = any(word in code.upper() for word in ('AUTH', 'TOKEN', 'LOGIN', 'SESSION'))
             # Do not return arbitrary upstream payloads, which may contain account data.
             message = '도서관 요청이 거절되었습니다. 공식 앱에서 이용 상태를 확인해 주세요.'
-            raise LibraryError(message, expired=expired, uncertain=method != 'GET' and response.status_code >= 500)
+            rejected = (response.status_code in (200, 400, 409, 422)
+                        and body.get('success') is False and not expired)
+            raise LibraryError(message, expired=expired, uncertain=method != 'GET' and response.status_code >= 500,
+                               rejected=rejected)
         if method == 'GET' and path == 'seat-charges' and body.get('code') == 'success.noRecord':
             return []  # Explicit empty result used by the official reservation page.
         return body.get('data')
@@ -598,7 +613,7 @@ class SeatService:
                     next_check = min(next_check, max(time.time() + 1, due))
                 job = state['scheduledBooking']
                 if job and job['status'] == 'pending':
-                    next_check = min(next_check, max(time.time() + 1, job['dueAt']))
+                    next_check = min(next_check, max(time.time() + 1, scheduled_check_at(job)))
                 self._update(interval=interval, nextCheck=next_check if self.client else None)
 
     def set_schedule(self, key, due_at):
@@ -618,7 +633,8 @@ class SeatService:
                 raise LibraryError('사용할 수 있는 좌석을 선택해 주세요.')
             self._update(scheduledBooking={'id': uuid.uuid4().hex, 'key': key, 'roomId': room,
                          'seatId': seat['id'], 'roomName': seat['roomName'], 'number': seat['number'],
-                         'dueAt': due_at, 'status': 'pending', 'stage': None, 'result': None}, error=None)
+                         'dueAt': due_at, 'status': 'pending', 'stage': None, 'result': None,
+                         'retryAt': None, 'attempts': 0}, error=None)
             self._event(f"{seat['roomName']} {seat['number']}번 시간 예약을 등록했습니다.")
             self._save()
             self.wake.set()
@@ -632,17 +648,30 @@ class SeatService:
             self._event('시간 예약을 취소했습니다. 현재 좌석은 유지됩니다.')
             self._save()
 
+    def _scheduled_seat(self, job):
+        seat = next((seat for seat in self._read_seats({job['roomId']}) if seat['key'] == job['key']), None)
+        if not seat or seat['occupied'] is not False or str(seat['id']) != str(job['seatId']):
+            raise LibraryError('선택한 좌석이 비어 있지 않거나 좌석 정보가 바뀌었습니다.')
+        return seat
+
+    @staticmethod
+    def _check_schedule_deadline(job):
+        elapsed = time.time() - job['dueAt']
+        if opening_booking(job) and elapsed >= OPENING_BOOKING_WINDOW_SECONDS:
+            raise LibraryError('05:01까지 예약에 성공하지 못해 종료했습니다.')
+        if not opening_booking(job) and elapsed > 120:
+            raise LibraryError('실행 시간을 지나 종료했습니다.')
+
     def _check_scheduled(self):
         job = self.snapshot()['scheduledBooking']
-        if not job or job['status'] not in {'pending', 'working'} or (job['status'] == 'pending' and time.time() < job['dueAt']):
+        if not job or job['status'] not in {'pending', 'working'} or (job['status'] == 'pending' and time.time() < scheduled_check_at(job)):
             return False
         stage = job.get('stage') or '실행 준비'
         self.quiet_notifications = True
         try:
             if job['status'] == 'working':
                 raise LibraryError('이전 실행 결과를 확인하지 못해 종료했습니다. 내 좌석을 확인해 주세요.')
-            if time.time() - job['dueAt'] > 120:
-                raise LibraryError('실행 시간을 지나 종료했습니다.')
+            self._check_schedule_deadline(job)
             self._update(scheduledBooking={**job, 'status': 'working', 'stage': stage})
             self._save()  # Claim once durably, before even the first external request.
             if not self.client:
@@ -653,19 +682,43 @@ class SeatService:
                 raise LibraryError('이미 이용 중인 좌석이 있어 현재 좌석을 유지했습니다.')
             if job['roomId'] not in self.nfc_tags:
                 raise LibraryError('이 열람실의 배정확정 설정을 확인할 수 없습니다.')
-            seat = next((seat for seat in self._read_seats({job['roomId']}) if seat['key'] == job['key']), None)
-            if not seat or seat['occupied'] is not False or str(seat['id']) != str(job['seatId']):
-                raise LibraryError('선택한 좌석이 비어 있지 않거나 좌석 정보가 바뀌었습니다.')
+            seat = self._scheduled_seat(job)
             self._update(running=False, targets=[], repeat=None, autoRenew=None,
                          repeatControl={'observedId': None, 'paused': True})
             stage = '좌석 예약'
+            job = {**job, 'attempts': job.get('attempts', 0) + 1, 'retryAt': None}
             self._update(scheduledBooking={**job, 'status': 'working', 'stage': stage})
             self._save()
             booked_at = time.time()
-            if booked_at - job['dueAt'] > 120:
-                raise LibraryError('실행 시간을 지나 종료했습니다.')
-            self.client.reserve(seat['id'])
-            self._confirm_booking(seat, booked_at)
+            self._check_schedule_deadline(job)
+            verified = None
+            try:
+                self.client.reserve(seat['id'])
+            except LibraryError as error:
+                if not opening_booking(job) or error.expired:
+                    raise
+                # A missing response is never permission to repeat a reservation write.
+                verified = self._read_reservation()
+                self._update(reservation=verified, reservationFresh=True)
+                if verified:
+                    if (verified['state'] not in ACTIVE_STATES
+                            or str(verified.get('seatId')) != str(job['seatId'])
+                            or str(verified.get('roomId')) != str(job['roomId'])):
+                        raise LibraryError('다른 배정이 확인되어 시간 예약을 종료했습니다.') from None
+                else:
+                    if error.uncertain or not error.rejected:
+                        raise error
+                    self._scheduled_seat(job)  # Verify the seat is still free after the definite rejection.
+                    self._check_schedule_deadline(job)
+                    retry_at = min(time.time() + OPENING_BOOKING_RETRY_SECONDS,
+                                   job['dueAt'] + OPENING_BOOKING_WINDOW_SECONDS)
+                    self._update(scheduledBooking={**job, 'status': 'pending', 'stage': stage, 'retryAt': retry_at,
+                                 'result': '05:01까지 3초 간격으로 예약을 다시 시도합니다.'},
+                                 error=None, nextCheck=retry_at)
+                    self._event('05:00 예약이 거절되어 빈 좌석을 확인한 뒤 재시도를 기다립니다.')
+                    self._save()
+                    return True
+            self._confirm_booking(seat, booked_at, verified=verified)
             stage = '배정확정'
             self._update(scheduledBooking={**job, 'status': 'working', 'stage': stage})
             self._save()
@@ -729,8 +782,8 @@ class SeatService:
         self._event('좌석 예약과 배정확정을 완료했습니다.' if int(seat['roomId']) in self.nfc_tags else
                     '좌석을 예약했습니다. 공식 앱에서 NFC 인증을 진행해 주세요.')
 
-    def _confirm_booking(self, seat, booked_at, *, previous_id=None):
-        reservation = self.client.reservation()
+    def _confirm_booking(self, seat, booked_at, *, previous_id=None, verified=None):
+        reservation = verified if verified is not None else self.client.reservation()
         if (reservation and reservation['state'] == 'TEMP_CHARGE'
                 and str(reservation.get('seatId')) == str(seat['id'])
                 and reservation.get('startedAt') is None):

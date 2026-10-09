@@ -275,6 +275,23 @@ describe('React app with the existing account API', () => {
     expect(screen.getByText('등록·변경은 전날 낮 12시부터 당일 오전 5시 전까지 가능합니다.')).toBeTruthy();
   });
 
+  it('shows opening retry progress and permits cancellation after five without adding settings', async () => {
+    data.scheduleWindow.open = false;
+    data.scheduledBooking = { id: 'opening-job', key: '102:3', roomId: 102, roomName: '1열람실 A', number: '3',
+      dueAt: Date.now() / 1000 - 10, retryAt: Date.now() / 1000 + 3, status: 'pending',
+      result: '05:01까지 3초 간격으로 예약을 다시 시도합니다.' };
+    await openApp();
+    fireEvent.click(screen.getByRole('button', { name: '시간 예약', exact: true }));
+    expect(screen.getByRole('heading', { name: '예약 재시도 중' })).toBeTruthy();
+    expect(screen.getByText('05:01까지 3초 간격으로 예약을 다시 시도합니다.')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '변경', exact: true }).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: '시간 예약 취소' }).disabled).toBe(false);
+    expect(writes('reserve')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: '시간 예약 취소' }));
+    await screen.findByRole('heading', { name: '시간 예약 취소됨' });
+    expect(writes('schedule/cancel')[0].body).toEqual({ id: 'opening-job' });
+  });
+
   it('selects a future seat from its details without booking', async () => {
     await openApp();
     fireEvent.click(seat('1열람실 A 1번 1분 상세 보기'));
@@ -933,6 +950,8 @@ describe('polling and concurrent user actions', () => {
     expect(pollDelay({ autoRenew: { status: 'scheduled', dueAt: 110 } }, 100)).toBe(1000);
     expect(pollDelay({ autoRenew: { status: 'scheduled', dueAt: 99 } }, 100)).toBe(1000);
     expect(pollDelay({ running: false, repeat: null }, 100)).toBe(15000);
+    expect(pollDelay({ scheduledBooking: { status: 'pending', dueAt: 90, retryAt: 103 } }, 100)).toBe(1000);
+    expect(pollDelay({ scheduledBooking: { status: 'pending', dueAt: 120, retryAt: null } }, 100)).toBe(5000);
   });
 
   it('keeps unsaved seat selection when background data is refreshed', async () => {
