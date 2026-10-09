@@ -1,35 +1,5 @@
-import { useEffect, useState } from 'react';
 import { timeLabel } from '../model';
 import RenewalControls from './RenewalControls';
-
-function RepeatCountdown({ repeat, paused }) {
-  const [now, setNow] = useState(() => Date.now() / 1000);
-  useEffect(() => {
-    if (!repeat) return;
-    const update = () => {
-      if (!document.hidden) setNow(Date.now() / 1000);
-    };
-    update();
-    const timer = setInterval(update, 1000);
-    document.addEventListener('visibilitychange', update);
-    return () => {
-      clearInterval(timer);
-      document.removeEventListener('visibilitychange', update);
-    };
-  }, [repeat?.dueAt]);
-  const remaining = repeat ? Math.max(0, Math.ceil(repeat.dueAt - now)) : 0;
-  return (
-    <p id="repeat-status" className="fine">
-      {!repeat
-        ? '자동 재예약 꺼짐 · 켜면 9분마다 같은 좌석 재예약'
-        : paused
-          ? '연결 확인 중 · 내 좌석을 확인해 주세요'
-          : remaining
-            ? `${Math.floor(remaining / 60)}분 ${String(remaining % 60).padStart(2, '0')}초 후 재예약`
-            : '재예약 시간 · 서버 확인 중'}
-    </p>
-  );
-}
 
 export default function ReservationCard({
   cardRef,
@@ -39,14 +9,12 @@ export default function ReservationCard({
   reassigning,
   reachable,
   onRelease,
-  onRepeat,
-  onConfirm,
   onReassign,
   onRenew,
   onAutoRenew,
 }) {
-  const { reservation, reservationFresh, repeat } = data;
-  if (!reservation && !repeat) return null;
+  const { reservation, reservationFresh } = data;
+  if (!reservation) return null;
   const temporary = reservation?.state === 'TEMP_CHARGE';
   const confirmed = ['CHARGE', 'IN_USE'].includes(reservation?.state);
   const canAct = data.connected && reachable && !busy;
@@ -94,14 +62,10 @@ export default function ReservationCard({
             {!confirmed && <p className="fine">
               {temporary
                 ? confirmationAvailable
-                  ? '도서관에 도착했다면 제한 시간 안에 배정을 확정해 주세요.'
+                  ? '자동 확정이 완료되지 않았습니다. 공식 앱에서 배정 상태와 NFC 인증을 확인해 주세요.'
                   : '이 열람실은 현장에서 공식 앱으로 NFC 인증을 진행해 주세요.'
                 : '공식 앱에서 배정 상태를 확인해 주세요.'}
             </p>}
-            {temporary && confirmationAvailable && <button id="confirm-allocation" className="primary"
-              disabled={!canAct || !reservationFresh} onClick={() => onConfirm(reservation)}>
-              배정 확정
-            </button>}
             {confirmed && confirmationAvailable && <button id="reassign" className="primary"
               disabled={!canAct || !reservationFresh} onClick={() => onReassign(reservation)}>
               {reassigning ? '재배정 진행 중…' : '좌석 반납 후 다시 배정'}
@@ -121,39 +85,6 @@ export default function ReservationCard({
             </button>
           </div>
         </>
-      )}
-      {(temporary || repeat) && (
-        <div id="repeat-controls" className="repeat-controls">
-          <div className="section-heading">
-            <div>
-              <h3>임시배정 자동 재예약</h3>
-              <RepeatCountdown
-                repeat={repeat}
-                paused={!reachable || !data.connected || !!data.error}
-              />
-            </div>
-            <button
-              id="repeat-toggle"
-              className="switch"
-              role="switch"
-              aria-checked={!!repeat}
-              aria-label="임시배정 자동 재예약"
-              disabled={
-                busy ||
-                !reachable ||
-                (!repeat && (!canAct || !reservationFresh))
-              }
-              onClick={() => onRepeat(!repeat, reservation?.id || '')}
-            >
-              <span />
-            </button>
-          </div>
-          <p className="repeat-note">
-            서버에서 실행 · 배정 확정 시 종료
-            <br />
-            취소 직후 다른 사람이 예약하면 자리를 잃을 수 있습니다.
-          </p>
-        </div>
       )}
     </section>
   );

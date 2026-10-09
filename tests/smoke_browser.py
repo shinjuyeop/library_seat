@@ -119,33 +119,18 @@ def main():
             wait.until(EC.invisibility_of_element_located((By.ID, 'seat-sheet')))
             assert driver.switch_to.active_element.get_attribute('aria-label') == '1열람실 A 3번 빈자리 상세 보기'
             click(free_seat)
-            click('#quick-reserve-button')
-            visible('#confirm-dialog')
-            assert service.snapshot()['reservation'] is None
             started = time.monotonic()
-            click('#confirm-dialog .primary')
+            click('#quick-reserve-button')
             visible('#reservation')
             assert time.monotonic() - started < 8, 'assignment fell back to slow idle polling'
             wait.until(lambda d: d.execute_script('return document.activeElement.id') == 'reservation')
-            assert '확정 필요' in visible('#reservation-badge').text
-            assert visible('#repeat-toggle').get_attribute('aria-checked') == 'true'
+            assert visible('#reservation-badge').text == '배정 확정'
+            assert not driver.find_elements(By.ID, 'repeat-toggle')
+            assert not service.snapshot()['running'] and not service.snapshot()['repeat']
             screenshot('ios-my-seat')
 
-            # Repeat controls preserve the held seat; background repeat preserves navigation.
-            old_id = service.snapshot()['reservation']['id']
-            click('#repeat-toggle')
-            wait.until(lambda d: visible('#repeat-toggle').get_attribute('aria-checked') == 'false')
-            assert service.snapshot()['reservation']['id'] == old_id
-            click('#repeat-toggle')
-            click('#confirm-dialog .primary')
-            wait.until(lambda d: visible('#repeat-toggle').get_attribute('aria-checked') == 'true')
             tab('find')
             visible('.mini-bar')
-            service._update(repeat={**service.snapshot()['repeat'], 'dueAt': time.time() + 2})
-            service.wake.set()
-            wait.until(lambda d: (current := service.snapshot()['reservation']) and current['id'] != old_id)
-            wait.until(lambda d: '자동 재예약 완료' in visible('#toast').text)
-            assert driver.find_element(By.ID, 'nav-find').get_attribute('aria-current') == 'page'
             screenshot('ios-mini-bar')
 
             # Filters and search survive tab changes.
@@ -190,34 +175,27 @@ def main():
 
             # Multiple selection is explicit and ordered, separate from inspecting a seat.
             tab('find')
-            query('3')
+            query('31')
             click('.browse-toolbar button')
-            target = '.seat-cell[aria-label="2열람실 3번 빈자리 대기 선택"]'
+            target = '.seat-cell[aria-label^="2열람실 31번 "][aria-label$="대기 선택"]'
             click(target)
             click('#selection-summary')
             visible('.selected-list')
-            assert '2열람실 · 3번' in visible('.selected-list').text
+            assert '2열람실 · 31번' in visible('.selected-list').text
             for width in (320, 390):
                 mobile(width)
                 no_overflow()
                 screenshot(f'ios-selected-{width}')
             click('.browse-toolbar button')
-            # Stop leaves the previous target as a draft; inspect the explicitly chosen free seat.
-            free_row = driver.find_element(By.XPATH, '//button[contains(@class,"seat-list-button")][.//strong[normalize-space(.)="2열람실 · 3번"]]')
-            driver.execute_script('arguments[0].scrollIntoView({block:"center"})', free_row)
-            free_row.click()
+            click('[data-view="all"]')
+            query('3')
+            click('.seat-cell[aria-label="2열람실 3번 빈자리 상세 보기"]')
             click('#quick-reserve-button')
             screenshot('ios-switch-confirm')
             click('#confirm-dialog .primary')
             wait.until(lambda d: (current := service.snapshot()['reservation']) and current['seatId'] == 232003)
             wait.until(lambda d: '2열람실' in visible('#reservation-seat').text)
-            assert service.snapshot()['repeat'], 'switch did not enable repeat'
-
-            # Exercise the actual confirmation UI/API against DemoClient only.
-            click('#confirm-allocation')
-            assert '자동 재예약과 갈아타기 대기는 중지' in visible('#confirm-dialog').text
-            screenshot('ios-allocation-confirmation')
-            click('#confirm-dialog .primary')
+            assert not service.snapshot()['repeat']
             wait.until(lambda d: visible('#reservation-badge').text == '배정 확정')
             assert '배정 확정 완료' in visible('#toast').text
             assert not service.snapshot()['repeat'], 'confirmed assignment kept repeating'
@@ -277,7 +255,7 @@ def main():
             # A contested target first restores and confirms the original seat, then
             # a later vacancy switches and confirms automatically. Demo requests only.
             base_reserve, base_seats = client.reserve, client.seats
-            contention = {'rejected': False, 'occupied': False}
+            contention = {'rejected': False, 'occupied': True}
             def contested_reserve(seat_id):
                 if seat_id == 102006 and not contention['rejected']:
                     contention.update(rejected=True, occupied=True)
@@ -290,15 +268,21 @@ def main():
                         row['isOccupied'] = True
                 return rows
             client.reserve, client.seats = contested_reserve, contested_seats
+            with service.operation:
+                service.tick()
             tab('find')
+            driver.execute_script('window.dispatchEvent(new Event("focus"))')
             click('[data-view="all"]')
             query('6')
             click('.browse-toolbar button')
-            click('.seat-cell[aria-label="1열람실 A 6번 빈자리 대기 선택"]')
+            click('.seat-cell[aria-label^="1열람실 A 6번 "][aria-label$="대기 선택"]')
             click('#start-stop')
             assert '새 좌석과 복구 좌석 모두 자동으로 배정확정' in visible('#confirm-dialog').text
             screenshot('ios-auto-confirm-wait-dialog')
             click('#confirm-dialog .primary')
+            with service.operation:
+                contention['occupied'] = False
+            service.wake.set()
             wait.until(lambda d: (current := service.snapshot()['reservation']) and current['id'] != reassigned['id'] and current['state'] == 'CHARGE')
             recovered = service.snapshot()
             assert recovered['reservation']['seatId'] == reassigned['seatId']
@@ -385,7 +369,7 @@ def main():
             screenshot('desktop-room-overview')
             errors = [entry for entry in driver.get_log('browser') if entry['level'] == 'SEVERE']
             assert not errors, json.dumps(errors)
-            print('PASS: mobile/desktop layout, rooms, search, booking, repeat, waiting, switching, confirmation, renewal, quota reset with continued auto-renewal, return-reassign-confirm, recovery+confirmation, release; no browser errors')
+            print('PASS: mobile/desktop layout, rooms, search, immediate booking+confirmation, retired repeat controls, waiting, switching, renewal, quota reset with continued auto-renewal, return-reassign-confirm, recovery+confirmation, scheduling, release; no browser errors')
         except Exception:
             screenshot('failure')
             raise

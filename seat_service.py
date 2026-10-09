@@ -41,6 +41,10 @@ def configured_nfc_tags():
             for room, tag in tags.items()
         ):
             return {}
+        # The captured NFC tag is shared across the library's reading rooms.
+        if len(set(tags.values())) == 1:
+            shared = next(iter(tags.values()))
+            return {room: shared for room in ROOMS}
         return {int(room): tag for room, tag in tags.items()}
     except (ValueError, TypeError):
         return {}
@@ -96,6 +100,9 @@ def sanitize_seat_catalog(state):
     state['seats'] = [seat for seat in state.get('seats', []) if valid_seat_key(seat.get('key'))]
     state['targets'] = [key for key in state.get('targets', []) if valid_seat_key(key)]
     state['running'] = bool(state.get('running') and state['targets'])
+    # Retire persisted temporary-seat loops, including cloud documents from older versions.
+    state['repeat'] = None
+    state['repeatControl'] = {'observedId': None, 'paused': True}
     return state
 
 
@@ -660,131 +667,21 @@ class SeatService:
         self._update(nextCheck=time.time() + self.interval)
         return True
 
-    @staticmethod
-    def _repeat_plan(reservation):
-        if not reservation or reservation['state'] != 'TEMP_CHARGE':
-            raise LibraryError('임시배정된 좌석에서만 자동 재예약을 켤 수 있습니다.')
-        started = reservation.get('startedAt')
-        seat_id, room_id = reservation.get('seatId'), reservation.get('roomId')
-        if (not str(seat_id).isdigit() or not str(room_id).isdigit() or int(room_id) not in ROOMS
-                or not valid_seat_key(f"{room_id}:{reservation.get('seatNo')}")
-                or not isinstance(started, (int, float)) or not math.isfinite(started)
-                or started > time.time() + 5 or time.time() >= started + TEMP_DURATION_SECONDS):
-            raise LibraryError('임시배정 시간이나 좌석 정보를 확인할 수 없습니다. 새로고침 후 다시 시도해 주세요.')
-        return {'reservationId': reservation['id'], 'seatId': seat_id, 'roomId': int(room_id),
-                'dueAt': started + TEMP_REPEAT_SECONDS, 'expiresAt': started + TEMP_DURATION_SECONDS}
-
-    @staticmethod
-    def _repeat_matches(reservation, repeat):
-        return bool(reservation and reservation['state'] == 'TEMP_CHARGE'
-                    and reservation['id'] == repeat['reservationId']
-                    and str(reservation.get('seatId')) == str(repeat['seatId'])
-                    and str(reservation.get('roomId')) == str(repeat['roomId']))
-
     def _auto_repeat(self, reservation, *, force=False):
-        if not reservation or reservation['state'] != 'TEMP_CHARGE':
-            return
-        state = self.snapshot()
-        control = state['repeatControl']
-        if state['repeat'] or (not force and (control['paused'] or control['observedId'] == reservation['id'])):
-            return
-        self._update(repeatControl={'observedId': reservation['id'], 'paused': False})
-        try:
-            self._update(repeat=self._repeat_plan(reservation))
-            self._event('임시배정 자동 재예약을 시작했습니다. 배정 9분 후 같은 좌석을 다시 예약합니다.')
-        except LibraryError:
-            self._event('임시배정 시간이나 좌석 정보를 확인할 수 없어 자동 재예약을 켜지 못했습니다.')
-        self._save()
+        # Compatibility for old workers: never arm or execute a temporary rebooking.
+        self._update(repeat=None, repeatControl={'observedId': None, 'paused': True})
+
+    def _check_repeat(self, reservation, *, allow_repeat):
+        self._auto_repeat(reservation)
 
     def set_repeat(self, enabled, expected_id):
         if type(enabled) is not bool or not isinstance(expected_id, str):
             raise LibraryError('올바른 자동 재예약 설정을 지정해 주세요.')
+        if enabled:
+            raise LibraryError('임시배정 자동 재예약은 비활성화되었습니다.')
         with self.operation:
-            if not enabled:
-                current = self.snapshot()['reservation']
-                self._update(repeat=None, error=None,
-                             repeatControl={'observedId': current['id'] if current else expected_id, 'paused': False})
-                self._save()
-                self._event('자동 재예약을 껐습니다. 현재 좌석은 유지됩니다.')
-                return
-            if not self.client:
-                raise LibraryError('도서관 계정을 먼저 연결해 주세요.')
-            try:
-                reservation = self._read_reservation()
-                self._update(reservation=reservation, reservationFresh=True)
-                if not reservation or reservation['id'] != expected_id:
-                    raise LibraryError('내 좌석이 변경되었습니다. 다시 확인해 주세요.')
-                plan = self._repeat_plan(reservation)
-                self._update(repeat=plan, error=None,
-                             repeatControl={'observedId': reservation['id'], 'paused': False},
-                             nextCheck=min(self.snapshot()['nextCheck'] or time.time() + 30,
-                                           time.time() + 30, max(time.time() + 1, plan['dueAt'])))
-                self._save()
-                self._event('자동 재예약을 켰습니다. 임시배정 9분 후 같은 좌석을 다시 예약합니다.')
-                self.wake.set()
-            except LibraryError as error:
-                self._failure(error)
-                raise
-
-    def _check_repeat(self, reservation, *, allow_repeat):
-        repeat = self.snapshot()['repeat']
-        if not repeat:
-            return
-        if (not self._repeat_matches(reservation, repeat) or time.time() >= repeat['expiresAt']
-                or not valid_seat_key(f"{reservation.get('roomId')}:{reservation.get('seatNo')}")):
-            self._update(repeat=None, repeatControl={'observedId': reservation['id'] if reservation else None, 'paused': False})
+            self._auto_repeat(None)
             self._save()
-            self._event('배정 상태가 바뀌었거나 시간이 지나 자동 재예약을 종료했습니다.')
-            return
-        if not allow_repeat or time.time() < repeat['dueAt']:
-            return
-        # Recheck at the write boundary: never cancel a confirmed or replacement reservation.
-        current = self._read_reservation()
-        self._update(reservation=current, reservationFresh=True)
-        if (not self._repeat_matches(current, repeat) or time.time() >= repeat['expiresAt']
-                or not valid_seat_key(f"{current.get('roomId')}:{current.get('seatNo')}")):
-            self._update(repeat=None, repeatControl={'observedId': current['id'] if current else None, 'paused': False})
-            self._save()
-            self._event('내 좌석 상태가 변경되어 자동 재예약을 종료했습니다.')
-            return
-        # Durable disarm BEFORE cancel: crashes and ambiguous writes must never replay.
-        previous = self.snapshot()
-        self._update(repeat=None, running=False, targets=[],
-                     repeatControl={'observedId': current['id'], 'paused': True})
-        self._event('임시배정을 취소하고 같은 좌석을 다시 예약합니다.')
-        self._save()
-        try:
-            self.client.release(current)
-            after_cancel = self.client.reservation()
-            self._update(reservation=after_cancel, reservationFresh=True)
-            if after_cancel:
-                raise LibraryError('취소 후 좌석 상태를 확인할 수 없어 재예약을 중지했습니다.')
-            booked_at = time.time()
-            self.client.reserve(repeat['seatId'])
-            booked = self.client.reservation()
-            self._update(reservation=booked, reservationFresh=True)
-            if (not booked or booked['id'] == repeat['reservationId']
-                    or str(booked.get('seatId')) != str(repeat['seatId'])
-                    or str(booked.get('roomId')) != str(repeat['roomId'])):
-                raise LibraryError('재예약 결과를 확인할 수 없어 자동 재예약을 중지했습니다. 내 좌석을 확인해 주세요.')
-            if booked['state'] == 'TEMP_CHARGE':
-                if booked.get('startedAt') is None:
-                    booked['startedAt'] = booked_at
-                    self._update(reservation=booked)
-                plan = self._repeat_plan(booked)
-                if plan['dueAt'] <= time.time():
-                    raise LibraryError('새 배정 시간을 확인할 수 없어 자동 재예약을 중지했습니다.')
-                self._update(repeat=plan)
-            self._update(running=previous['running'], targets=previous['targets'],
-                         repeatControl={'observedId': booked['id'], 'paused': False})
-            self._save()
-            self._event('같은 좌석을 다시 예약했습니다. 현장에서 NFC 인증을 완료해 주세요.')
-            self._seat_notification('자동 재예약에 성공했습니다')
-            self._save()
-        except LibraryError:
-            self._update(repeat=None)
-            self._event('자동 재예약을 중지했습니다. 내 좌석을 확인해 주세요.')
-            raise
 
     def _reserve(self, seat):
         previous = self.snapshot()
@@ -806,11 +703,14 @@ class SeatService:
         self._update(running=False, targets=[])
         self._save()
         self._event(f"{seat['roomName']} {seat['number']}번 예약 요청이 접수되었습니다. 배정 상태를 확인합니다.")
-        self._confirm_booking(seat, booked_at)
-        self._seat_notification('좌석 예약에 성공했습니다')
+        self._confirm_booking(seat, booked_at, start_repeat=False)
+        if int(seat['roomId']) in self.nfc_tags:
+            self.confirm(self.snapshot()['reservation']['id'])
+        else:
+            self._seat_notification('좌석 예약에 성공했습니다')
         self._save()
-        self._event('좌석을 확보했습니다. 임시배정 자동 재예약은 9분마다 실행되며 NFC 인증 시 종료됩니다.'
-                    if self.snapshot()['repeat'] else '좌석을 확보했습니다. 내 좌석에서 배정 상태를 확인해 주세요.')
+        self._event('좌석 예약과 배정확정을 완료했습니다.' if int(seat['roomId']) in self.nfc_tags else
+                    '좌석을 예약했습니다. 공식 앱에서 NFC 인증을 진행해 주세요.')
 
     def _confirm_booking(self, seat, booked_at, *, start_repeat=True, previous_id=None):
         reservation = self.client.reservation()
@@ -850,7 +750,7 @@ class SeatService:
                 or int(reservation['roomId']) not in ROOMS):
             raise LibraryError('기존 좌석 상태나 식별 정보를 확인할 수 없어 갈아타기를 중지했습니다.')
 
-    def _switch_reserve(self, seat, current, *, auto_confirm=False):
+    def _switch_reserve(self, seat, current, *, auto_confirm=True):
         self._validate_switch_source(current)
         previous = self.snapshot()
         # Persist before releasing: neither a crash nor an unknown result may replay the switch.

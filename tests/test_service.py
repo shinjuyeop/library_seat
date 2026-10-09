@@ -209,7 +209,7 @@ class SwitchTests(ServiceFixture):
                 self.assertEqual(result['reservation']['seatId'], 102003)
                 self.assertFalse(result['running'])
                 self.assertEqual(result['targets'], [])
-                self.assertEqual(result['repeat']['reservationId'], result['reservation']['id'])
+                self.assertIsNone(result['repeat'])
                 self.client.release = self.client.release._mock_wraps
 
     def test_definite_rejection_recovers_original_and_resumes_wait(self):
@@ -227,7 +227,7 @@ class SwitchTests(ServiceFixture):
         self.assertEqual(state['reservation']['state'], 'TEMP_CHARGE')
         self.assertTrue(state['running'])
         self.assertEqual(state['targets'], ['102:3', '232:3'])
-        self.assertIsNotNone(state['repeat'])
+        self.assertIsNone(state['repeat'])
         self.assertIn('원래 좌석을 다시 예약', state['message'])
 
     def test_uncertain_or_expired_target_request_never_attempts_recovery(self):
@@ -371,169 +371,8 @@ class SwitchTests(ServiceFixture):
         self.client.release.assert_called_once()
 
 
-class RepeatTests(ServiceFixture):
-    def enable(self, elapsed=0):
-        self.client.reserve(102003)
-        self.client.current['startedAt'] = time.time() - elapsed
-        self.service.set_repeat(True, self.client.current['id'])
+class ReservationMetadataTests(ServiceFixture):
 
-    def test_repeat_runs_at_nine_minutes(self):
-        self.enable(539)
-        self.client.release = Mock(wraps=self.client.release)
-        self.service.tick()
-        self.client.release.assert_not_called()
-        self.service.state['repeat']['dueAt'] = time.time() - 1
-        self.service.tick()
-        self.client.release.assert_called_once()
-        state = self.service.snapshot()
-        self.assertEqual(state['reservation']['id'], '2')
-        self.assertEqual(state['reservation']['seatId'], 102003)
-        self.assertEqual(state['repeat']['reservationId'], '2')
-        self.assertAlmostEqual(state['repeat']['dueAt'], time.time() + 540, delta=1)
-        self.service.tick()
-        self.assertEqual(self.client.release.call_count, 1)
-
-    def test_booking_and_existing_temporary_seat_auto_enable_repeat(self):
-        self.service.reserve('102:3')
-        self.assertEqual(self.service.snapshot()['repeat']['reservationId'], '1')
-        self.assertAlmostEqual(self.store.load()['repeat']['dueAt'], time.time() + 540, delta=1)
-        self.client.reserve(232003)
-        # A new externally observed seat without an old repeat plan also auto starts.
-        self.service.state['repeat'] = None
-        self.service.tick()
-        self.assertEqual(self.service.snapshot()['repeat']['reservationId'], '2')
-
-    def test_manual_disable_survives_poll_and_restart_until_new_booking(self):
-        self.service.reserve('102:3')
-        self.service.set_repeat(False, '1')
-        self.service.tick()
-        restarted = SeatService(self.store, client=self.client)
-        restarted.tick()
-        self.assertIsNone(restarted.snapshot()['repeat'])
-        restarted.reserve('232:3')
-        self.assertIsNotNone(restarted.snapshot()['repeat'])
-
-    def test_repeat_cycle_keeps_switch_wait_targets(self):
-        self.enable(541)
-        self.service.set_wait(['232:1'], True)
-        self.service.tick()
-        state = self.service.snapshot()
-        self.assertEqual(state['reservation']['id'], '2')
-        self.assertTrue(state['running'])
-        self.assertEqual(state['targets'], ['232:1'])
-
-    def test_repeat_stops_on_confirmed_changed_or_expired_reservation(self):
-        for change in ({'state':'CHARGE'}, {'state':'IN_USE'}, {'id':'another'}, {'seatId':102006}, {'roomId':101}):
-            with self.subTest(change=change):
-                self.enable(541)
-                self.client.current.update(change)
-                self.client.release = Mock()
-                self.service.tick()
-                self.client.release.assert_not_called()
-                self.assertIsNone(self.store.load()['repeat'])
-        self.enable(541)
-        self.service.state['repeat']['expiresAt'] = time.time() - 1
-        self.service.tick()
-        self.client.release.assert_not_called()
-        self.assertIsNone(self.service.snapshot()['repeat'])
-
-    def test_nfc_confirmation_at_write_boundary_is_not_cancelled(self):
-        self.enable(541)
-        temporary = self.client.reservation()
-        confirmed = dict(temporary, state='CHARGE')
-        self.client.reservation = Mock(side_effect=[temporary, confirmed])
-        self.client.release = Mock()
-        self.service.tick()
-        self.client.release.assert_not_called()
-        self.assertIsNone(self.service.snapshot()['repeat'])
-        self.assertEqual(self.service.snapshot()['reservation']['state'], 'CHARGE')
-
-    def test_cancel_failures_never_reserve_or_replay(self):
-        for uncertain in (False, True):
-            with self.subTest(uncertain=uncertain):
-                self.client = DemoClient()
-                self.service.client = self.client
-                self.enable(541)
-                self.client.release = Mock(side_effect=LibraryError('cancel failed', uncertain=uncertain))
-                self.client.reserve = Mock()
-                self.service.tick()
-                self.service.tick()
-                self.client.release.assert_called_once()
-                self.client.reserve.assert_not_called()
-                self.assertIsNone(self.store.load()['repeat'])
-
-    def test_competition_after_cancel_stops_repeat(self):
-        self.enable(541)
-        self.client.reserve = Mock(side_effect=LibraryError('seat occupied'))
-        self.service.tick()
-        self.service.tick()
-        self.client.reserve.assert_called_once_with(102003)
-        self.assertIsNone(self.service.snapshot()['reservation'])
-        self.assertIsNone(self.store.load()['repeat'])
-
-    def test_cancel_not_reflected_or_verification_read_failure_never_rebooks(self):
-        for failed_read in (False, True):
-            with self.subTest(failed_read=failed_read):
-                self.client = DemoClient()
-                self.service.client = self.client
-                self.enable(541)
-                old = self.client.reservation()
-                self.client.release = Mock()
-                self.client.reserve = Mock()
-                self.client.reservation = Mock(side_effect=[old, old, LibraryError('read failed') if failed_read else old])
-                self.service.tick()
-                self.client.reserve.assert_not_called()
-                self.assertIsNone(self.store.load()['repeat'])
-
-    def test_final_verification_failure_never_repeats_write(self):
-        self.enable(541)
-        old = self.client.reservation()
-        self.client.release = Mock(wraps=self.client.release)
-        self.client.reserve = Mock(wraps=self.client.reserve)
-        self.client.reservation = Mock(side_effect=[old, old, None, LibraryError('read failed')])
-        self.service.tick()
-        self.assertIsNone(self.store.load()['repeat'])
-        self.client.reservation = Mock(return_value=self.client.current)
-        self.service.tick()
-        self.client.release.assert_called_once()
-        self.client.reserve.assert_called_once()
-
-    def test_disarm_survives_crash_before_cancel_completes(self):
-        self.enable(541)
-        def crash(reservation):
-            self.assertIsNone(self.store.load()['repeat'])
-            raise RuntimeError('process crashed')
-        self.client.release = Mock(side_effect=crash)
-        with self.assertRaises(RuntimeError):
-            self.service.tick()
-        restarted = SeatService(self.store, client=self.client)
-        restarted.tick()
-        self.client.release.assert_called_once()
-
-    def test_ambiguous_rebook_stops_even_if_write_succeeded(self):
-        self.enable(541)
-        reserve = self.client.reserve
-        def ambiguous(seat):
-            reserve(seat)
-            raise LibraryError('timeout', uncertain=True)
-        self.client.reserve = Mock(side_effect=ambiguous)
-        self.service.tick()
-        self.service.tick()
-        self.client.reserve.assert_called_once()
-        self.assertEqual(self.service.snapshot()['reservation']['id'], '2')
-        self.assertIsNone(self.store.load()['repeat'])
-
-    def test_disable_keeps_current_seat_and_invalid_metadata_is_rejected(self):
-        self.enable()
-        self.client.release = Mock()
-        self.service.set_repeat(False, '1')
-        self.client.release.assert_not_called()
-        self.assertIsNotNone(self.client.reservation())
-        self.client.current['startedAt'] = None
-        self.client.current['id'] = 'external'
-        with self.assertRaises(LibraryError):
-            self.service.set_repeat(True, 'external')
-        self.assertIsNone(self.store.load()['repeat'])
 
     def test_provider_metadata_and_korean_naive_time(self):
         base = {'id':7, 'state':{'code':'TEMP_CHARGE'}, 'seat':{'id':102003,'code':'3','room':{'id':102,'name':'Room'}}, 'startTime':'2026-10-07T10:00:00'}
@@ -553,8 +392,8 @@ class RepeatTests(ServiceFixture):
         self.client.reserve = no_timestamp
         self.service.reserve('102:3')
         self.service.tick()
-        self.service.set_repeat(True, '1')
-        self.assertAlmostEqual(self.service.snapshot()['repeat']['dueAt'], time.time() + 540, delta=1)
+        self.assertIsNone(self.service.snapshot()['repeat'])
+        self.assertAlmostEqual(self.service.snapshot()['reservation']['startedAt'], time.time(), delta=2)
 
 
 class ApiTests(ServiceFixture):
@@ -627,8 +466,8 @@ class ApiTests(ServiceFixture):
         headers = {'X-CSRF-Token':self.csrf}
         self.client.reserve(102003)
         self.assertEqual(self.browser.post('/api/repeat', json={'enabled':'true','id':'1'}, headers=headers).status_code, 400)
-        self.assertEqual(self.browser.post('/api/repeat', json={'enabled':True,'id':'1'}, headers=headers).status_code, 200)
-        self.assertTrue(self.browser.get('/api/state').json['repeat'])
+        self.assertEqual(self.browser.post('/api/repeat', json={'enabled':True,'id':'1'}, headers=headers).status_code, 409)
+        self.assertIsNone(self.browser.get('/api/state').json['repeat'])
 
 
 class FakeCloudStore:
@@ -734,14 +573,14 @@ class CloudTests(unittest.TestCase):
             self.assertTrue(alice.store.claim('other-operation'))
             with self.assertRaises(LibraryError):
                 alice.confirm(identifier)
-            self.assertEqual(self.clients['alice'].current['state'], 'TEMP_CHARGE')
+            self.assertEqual(self.clients['alice'].current['state'], 'CHARGE')
             alice.store.release('other-operation')
             alice.confirm(identifier)
             state = CloudService(alice.store, self.key).snapshot()
             self.assertEqual(state['reservation']['state'], 'CHARGE')
             self.assertIsNone(state['repeat'])
-            self.assertEqual(self.clients['bob'].current['state'], 'TEMP_CHARGE')
-            self.assertEqual(state['confirmationRooms'], [102])
+            self.assertEqual(self.clients['bob'].current['state'], 'CHARGE')
+            self.assertEqual(set(state['confirmationRooms']), {102,101,232,233,234,107})
             self.assertNotIn(tag, json.dumps(alice.store.read()))
         with patch.dict('os.environ', {'LIBRARY_NFC_TAGS': '{}'}):
             self.assertEqual(alice.snapshot()['confirmationRooms'], [])
@@ -801,7 +640,7 @@ class CloudTests(unittest.TestCase):
         client = self.clients['alice']
         client.reserve(101021)
         alice.refresh()
-        self.assertEqual(alice.snapshot()['repeat']['reservationId'], '1')
+        self.assertIsNone(alice.snapshot()['repeat'])
         alice.set_repeat(False, '1')
         alice.set_wait(['102:1'], True)
         client.release = Mock(wraps=client.release)
@@ -834,7 +673,7 @@ class CloudTests(unittest.TestCase):
         state = CloudService(alice.store, self.key).snapshot()
         self.assertEqual(state['reservation']['seatId'], 102003)
         self.assertFalse(state['running'])
-        self.assertIsNotNone(state['repeat'])
+        self.assertIsNone(state['repeat'])
         self.assertEqual(bob.snapshot()['reservation']['seatId'], 107003)
 
     def test_cloud_switch_recovery_persists_original_seat_and_wait(self):
@@ -852,7 +691,7 @@ class CloudTests(unittest.TestCase):
         other = self.login()
         self.assertTrue(other.snapshot()['running'])
         self.assertEqual(other.snapshot()['reservation']['seatId'], 101021)
-        self.assertIsNotNone(other.snapshot()['repeat'])
+        self.assertIsNone(other.snapshot()['repeat'])
         self.assertEqual(client.reserve.call_count, 2)
 
     def test_cloud_switch_and_recovery_confirmation_persist_under_account_lease(self):
@@ -894,55 +733,17 @@ class CloudTests(unittest.TestCase):
             self.assertIsNone(persisted['repeat'])
             self.assertEqual(client.check_arrival.call_count, 2)
 
-    def test_existing_temporary_seat_login_only_arms_repeat_without_cancelling(self):
+    def test_existing_temporary_seat_login_never_arms_repeat_or_cancels(self):
         client = self.clients['alice']
         client.reserve(101021)
         client.current['startedAt'] = time.time() - 541
         client.release = Mock(wraps=client.release)
         alice = self.login()
-        self.assertIsNotNone(alice.snapshot()['repeat'])
+        self.assertIsNone(alice.snapshot()['repeat'])
         client.release.assert_not_called()
         alice.tick()
-        client.release.assert_called_once()
-
-    def test_repeat_persists_isolated_and_disarms_before_cancel(self):
-        alice, bob = self.login(), self.login('bob')
-        client = self.clients['alice']
-        client.reserve(102003)
-        client.current['startedAt'] = time.time() - 541
-        alice.set_repeat(True, '1')
-        self.assertIsNone(bob.snapshot()['repeat'])
-        self.assertLess(alice.store.read()['nextPollAt'], time.time() + 2)
-        release = client.release
-        def cancel(reservation):
-            self.assertIsNone(alice.store.read()['state']['repeat'])
-            self.assertFalse(alice.store.read()['state']['running'])
-            release(reservation)
-        client.release = Mock(side_effect=cancel)
-        # A login on another device must not execute a due cancellation.
-        self.login()
         client.release.assert_not_called()
-        other = CloudService(alice.store, self.key)
-        other.tick()
-        client.release.assert_called_once()
-        self.assertEqual(other.snapshot()['repeat']['reservationId'], '2')
-        self.assertIsNone(bob.snapshot()['reservation'])
 
-    def test_repeat_api_cannot_target_another_account(self):
-        alice, bob = self.login(), self.login('bob')
-        self.clients['alice'].reserve(102003)
-        self.clients['bob'].reserve(102006)
-        app = create_app(self.root, 'test-admin-password-long-enough', secret='test-only', secure_cookie=False)
-        browser = app.test_client()
-        csrf = browser.get('/api/session').json['csrf']
-        response = browser.post('/api/library-login', json={'username':'alice','password':'valid-password','remember':True}, headers={'X-CSRF-Token':csrf})
-        csrf = response.json['csrf']
-        response = browser.post('/api/repeat', json={'enabled':True,'id':'1','account':bob.store.account}, headers={'X-CSRF-Token':csrf})
-        self.assertEqual(response.status_code, 200)
-        self.assertIsNotNone(alice.snapshot()['repeat'])
-        self.assertIsNone(bob.snapshot()['repeat'])
-        browser.post('/api/logout', json={}, headers={'X-CSRF-Token':csrf})
-        self.assertIsNotNone(alice.snapshot()['repeat'])
 
     def test_known_booking_time_survives_login_and_cloud_reconstruction(self):
         cloud = self.login()
@@ -954,8 +755,8 @@ class CloudTests(unittest.TestCase):
         client.reserve = reserve_without_time
         cloud.reserve('102:3')
         cloud = self.login()
-        cloud.set_repeat(True, '1')
-        self.assertAlmostEqual(cloud.snapshot()['repeat']['dueAt'], time.time() + 540, delta=1)
+        self.assertIsNone(cloud.snapshot()['repeat'])
+        self.assertAlmostEqual(cloud.snapshot()['reservation']['startedAt'], time.time(), delta=2)
 
     def test_cloud_dispatch_deadline_tracks_fast_wait_stop_and_idle(self):
         cloud = self.login()

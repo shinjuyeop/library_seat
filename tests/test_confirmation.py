@@ -15,7 +15,8 @@ class ConfirmationTests(ServiceFixture):
     def setUp(self):
         super().setUp()
         self.service.nfc_tags = {102: TAG}
-        self.service.reserve('102:3')
+        self.client.reserve(102003)
+        self.service.tick()
         self.service.set_wait(['232:1'], True)
         self.original = copy.deepcopy(self.client.current)
         self.client.release = Mock(wraps=self.client.release)
@@ -457,7 +458,7 @@ class AutomaticSwitchConfirmationTests(ServiceFixture):
         self.assertEqual(state['reservation']['seatId'], 232003)
         self.assertEqual(state['reservation']['state'], 'TEMP_CHARGE')
         self.assertFalse(state['running'])
-        self.assertIsNotNone(state['repeat'])
+        self.assertIsNone(state['repeat'])
         self.assertIn('공식 앱에서 NFC 인증', state['message'])
         self.client.check_arrival.assert_not_called()
 
@@ -479,7 +480,7 @@ class AutomaticSwitchConfirmationTests(ServiceFixture):
         self.assertEqual(state['reservation']['seatId'], 232006)
         self.assertEqual(state['reservation']['state'], 'TEMP_CHARGE')
         self.assertTrue(state['running'])
-        self.assertIsNotNone(state['repeat'])
+        self.assertIsNone(state['repeat'])
         self.assertIn('공식 앱에서 NFC 인증', state['message'])
         self.client.check_arrival.assert_not_called()
 
@@ -508,7 +509,7 @@ class ConfirmationTransportTests(unittest.TestCase):
             with patch.dict('os.environ', {'LIBRARY_NFC_TAGS': value}):
                 self.assertEqual(configured_nfc_tags(), {})
         with patch.dict('os.environ', {'LIBRARY_NFC_TAGS': json.dumps({'102': TAG})}):
-            self.assertEqual(configured_nfc_tags(), {102: TAG})
+            self.assertEqual(configured_nfc_tags(), {room: TAG for room in (102,101,232,233,234,107)})
 
 
 if __name__ == '__main__':

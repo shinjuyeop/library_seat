@@ -5,11 +5,12 @@ import RoomOverview from './RoomOverview';
 
 const Seat = memo(function Seat({ seat, order, selecting, own, disabled, onInspect, onToggle }) {
   const status = seatStatus(seat), chosen = order > 0;
+  const choosing = selecting && !status.free;
   return <button type="button"
     className={`seat-cell ${status.className}${chosen ? ' chosen' : ''}${own ? ' own' : ''}`}
-    aria-label={`${seat.roomName} ${seat.number}번 ${own ? '내 좌석' : status.compact} ${selecting ? '대기 선택' : '상세 보기'}`}
-    aria-pressed={selecting ? chosen : undefined} disabled={selecting && (disabled || own)}
-    onClick={() => selecting ? onToggle(seat.key) : onInspect(seat.key)}>
+    aria-label={`${seat.roomName} ${seat.number}번 ${own ? '내 좌석' : status.compact} ${choosing ? '대기 선택' : '상세 보기'}`}
+    aria-pressed={choosing ? chosen : undefined} disabled={choosing && (disabled || own)}
+    onClick={() => choosing ? onToggle(seat.key) : onInspect(seat.key)}>
     <span className="cell-number">{seat.number}</span>
     <span className="cell-status">{own ? '내 좌석' : status.compact}</span>
     {chosen && <span className="cell-order" aria-hidden="true">{order}<Icon name="check" /></span>}
@@ -80,7 +81,7 @@ export default function SeatBrowser({ data, selected, canAct, busy, filters, set
         <Icon name={selecting ? 'check' : 'list'} />{selecting ? '선택 마치기' : '여러 좌석 선택'}
       </button>}
     </div>
-    {selecting && !overview && <div className="selection-guide" role="status"><span>선택한 순서대로 빈자리를 기다립니다.</span>
+    {selecting && !overview && <div className="selection-guide" role="status"><span>사용 중인 좌석을 선택해 대기합니다. 빈자리는 바로 예약할 수 있어요.</span>
       <button id="clear-selection" className="text-button" disabled={blocked || !selected.length} onClick={onClear}>선택 해제</button>
     </div>}
     {data.running && !overview && <p className="inline-guide">좌석을 눌러 대기에 추가하거나 제외할 수 있어요.</p>}
