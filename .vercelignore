@@ -5,5 +5,6 @@ test-artifacts
 tests
 __pycache__
 .env*
-library.spec
+docs
+requirements-dev.txt
 node_modules

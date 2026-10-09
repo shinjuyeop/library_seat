@@ -31,7 +31,7 @@ export default function LoginForm({ directLogin, busy, error, onLogin }) {
       <form id="access-form" onSubmit={submit}>
         {directLogin && (
           <>
-            <label htmlFor="login-id">아이디 / 학번</label>
+            <label htmlFor="login-id">아이디</label>
             <input
               id="login-id"
               name="username"
@@ -114,7 +114,7 @@ export function ConnectionCard({ data, busy, onReconnect, onConnect }) {
         </button>
       ) : (
         <form id="connection-form" onSubmit={submit}>
-          <label htmlFor="library-id">아이디 / 학번</label>
+          <label htmlFor="library-id">아이디</label>
           <input
             id="library-id"
             name="username"

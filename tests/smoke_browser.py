@@ -1,5 +1,6 @@
 """Exercise the redesigned UI with local demo data; never contact the library."""
 import json
+import argparse
 import logging
 import sys
 import tempfile
@@ -23,6 +24,9 @@ from webapp import create_app
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--update-docs', action='store_true', help='Refresh README screenshots using demo data.')
+    args = parser.parse_args()
     artifacts = Path('test-artifacts')
     artifacts.mkdir(exist_ok=True)
     logging.getLogger('werkzeug').setLevel(logging.ERROR)
@@ -63,8 +67,16 @@ def main():
             search.send_keys(Keys.ENTER)
 
         def screenshot(name):
+            if args.update_docs and name == 'ios-my-seat':
+                wait.until(EC.invisibility_of_element_located((By.ID, 'toast')))
             wait.until(lambda d: d.execute_script('return document.getAnimations().every(a => a.playState === "finished")'))
             driver.save_screenshot(str(artifacts / (name + '.png')))
+            names = {'ios-room-overview-390': 'rooms', 'ios-my-seat': 'my-seat',
+                     'ios-schedule-form-390': 'schedule'}
+            if args.update_docs and name in names:
+                destination = Path('docs/screenshots')
+                destination.mkdir(parents=True, exist_ok=True)
+                (destination / (names[name] + '.png')).write_bytes((artifacts / (name + '.png')).read_bytes())
 
         def mobile(width=390):
             driver.execute_cdp_cmd('Emulation.setDeviceMetricsOverride', {
@@ -372,7 +384,7 @@ def main():
             screenshot('desktop-room-overview')
             errors = [entry for entry in driver.get_log('browser') if entry['level'] == 'SEVERE']
             assert not errors, json.dumps(errors)
-            print('PASS: mobile/desktop layout, rooms, search, immediate booking+confirmation, retired repeat controls, waiting, switching, renewal, quota reset with continued auto-renewal, return-reassign-confirm, recovery+confirmation, scheduling, release; no browser errors')
+            print('PASS: mobile/desktop layout, rooms, search, immediate booking+confirmation, waiting, switching, renewal, quota reset with continued auto-renewal, return-reassign-confirm, recovery+confirmation, scheduling, release; no browser errors')
         except Exception:
             screenshot('failure')
             raise

@@ -1,0 +1,4 @@
+-r requirements.txt
+selenium>=4.38,<5
+webdriver-manager>=4.0.2,<5
+Pillow>=11,<13

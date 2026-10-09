@@ -58,14 +58,14 @@ export default function App() {
   });
   useEffect(() => {
     const notice = library.reservationNotice;
-    if (!notice || notice.message.startsWith('자동 재예약') || notice.message.startsWith('연장 완료')) return;
+    if (!notice || notice.message.startsWith('연장 완료')) return;
     setInspectedKey(null);
     setSelecting(false);
     goTo('my');
   }, [library.reservationNotice, goTo]);
   useLayoutEffect(() => {
     const notice = library.reservationNotice;
-    if (tab === 'my' && notice && notice !== displayedNotice.current && !notice.message.startsWith('자동 재예약')) {
+    if (tab === 'my' && notice && notice !== displayedNotice.current) {
       displayedNotice.current = notice;
       reservationCard.current?.focus({ preventScroll: true });
       window.scrollTo({ top: 0, behavior: 'instant' });
@@ -158,7 +158,7 @@ export default function App() {
   const ready = session?.authorized && data;
   const inspectedSeat = data?.seats.find(seat => seat.key === inspectedKey);
   const hasDock = ready && ((tab === 'find' && !data.running && (selecting || selected.length > 0)) ||
-    (tab !== 'my' && (data.reservation || data.running || data.repeat)));
+    (tab !== 'my' && (data.reservation || data.running)));
   const status = !reachable ? '연결 끊김' : data?.connecting ? '로그인 중' : !data?.connected ? '로그인 필요'
     : data?.error ? '확인 필요' : '연결됨';
   const waitingList = ready && <WaitingList data={data} selected={selected} busy={busy} reachable={reachable} onSelection={showSelected} onAdd={findMoreSeats}
@@ -191,7 +191,7 @@ export default function App() {
             </div>
             <div hidden={tab !== 'my'} id="panel-my" className="detail-page">
               {data.running && waitingList}
-              {!data.reservation && !data.repeat && <section className="empty my-empty"><Icon name="seat" />
+              {!data.reservation && <section className="empty my-empty"><Icon name="seat" />
                 <strong>{data.reservationFresh ? data.running ? '빈자리를 기다리고 있어요' : '아직 배정된 좌석이 없어요' : '내 좌석을 확인하고 있어요'}</strong>
                 <p>{data.running ? '예약에 성공하면 여기에 좌석이 표시됩니다.' : data.reservationFresh ? '원하는 자리를 찾고 예약을 시작해 보세요.' : '다시 연결한 뒤 최신 배정 상태를 확인해 주세요.'}</p>
                 <button className="secondary" onClick={() => goTo('find')}>좌석 찾아보기</button></section>}

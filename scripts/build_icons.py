@@ -2,7 +2,8 @@
 from pathlib import Path
 from PIL import Image, ImageDraw
 
-assets = Path(__file__).resolve().parents[1] / 'public' / 'assets'
+assets = Path(__file__).resolve().parents[1] / 'frontend' / 'static' / 'assets'
+assets.mkdir(parents=True, exist_ok=True)
 background, foreground = '#173e32', '#ffffff'
 # Rounded back, seat, and two legs. All artwork stays inside the maskable safe area.
 shapes = [(178, 120, 334, 244, 25), (146, 262, 366, 300, 14),

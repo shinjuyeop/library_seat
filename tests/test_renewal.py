@@ -109,7 +109,7 @@ class RenewalTests(ServiceFixture):
         state = self.service.snapshot()
         self.assertEqual(state['autoRenew']['reservationId'], '1')
         self.assertEqual(state['autoRenew']['dueAt'], NOON + 3660)
-        self.service.tick(allow_repeat=False)
+        self.service.tick(allow_actions=False)
         self.assertEqual(self.calls.mock_calls, [])
 
     def test_opt_out_survives_due_reads_and_restart_but_new_booking_defaults_on(self):

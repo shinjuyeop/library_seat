@@ -115,7 +115,7 @@ class CloudService:
         state.update(cloud=True, connected=bool(document.get('credential')), autoLogin=bool(document.get('login')), schedulerLastSeen=document.get('schedulerLastSeen'))
         heartbeat = document.get('schedulerLastSeen')
         active_renewal = state.get('autoRenew') and state['autoRenew']['status'] in {'scheduled', 'retry', 'working'}
-        if (state['running'] or state['repeat'] or active_renewal) and (not heartbeat or time.time() - heartbeat > 120):
+        if (state['running'] or active_renewal) and (not heartbeat or time.time() - heartbeat > 120):
             state['error'] = '자동 실행 연결을 확인할 수 없습니다. 잠시 후 다시 확인해 주세요.'
             state['reservationFresh'] = False
         return state
@@ -128,8 +128,6 @@ class CloudService:
             due = max(now + 1, document.get('loginRetryAt', 0)) if document.get('login') else now + 300
         elif state['running']:
             due = max(now, state.get('nextCheck') or now)
-        elif state['repeat']:
-            due = now + 30 if state['error'] else max(now + 1, min(now + 30, state['repeat']['dueAt']))
         elif state['autoRenew']:
             plan = state['autoRenew']
             if plan['status'] in {'paused', 'working', 'night'}:
@@ -204,7 +202,7 @@ class CloudService:
                     document.pop('loginRetryAt', None)
                     worker._update(connected=True, running=False, error=None, reservation=worker._with_booking_time(reservation), reservationFresh=True)
                     worker._event('로그인했습니다.')
-                    worker.tick(allow_repeat=False)  # Login only reads, even when a repeat is due.
+                    worker.tick(allow_actions=False)  # Login never reserves, renews, or switches seats.
                     worker._update(running=bool(state['running'] and worker.client))
                     worker._update(interval=worker.poll_interval())
                     if worker.snapshot()['running']:
@@ -330,7 +328,7 @@ class CloudService:
             return False
         if state['running'] and state['interval'] == 1:
             return False
-        if (state['repeat'] and state['repeat']['dueAt'] <= time.time() + 20) or (state['autoRenew'] and
+        if (state['autoRenew'] and
                 state['autoRenew']['status'] in {'scheduled', 'retry'} and
                 max(state['autoRenew']['dueAt'], state['autoRenew'].get('retryAt') or 0, state['renewNightUntil'] or 0) <= time.time() + 20):
             return False
@@ -367,7 +365,7 @@ class CloudService:
             state = worker.snapshot()
             complete_catalog = state.get('catalogVersion') == 1
             recent_catalog = complete_catalog and time.time() - (state['lastChecked'] or 0) < 300
-            if not recent_catalog or state['running'] or state['repeat'] or state['autoRenew'] or state.get('scheduledBooking') or (state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE'):
+            if not recent_catalog or state['running'] or state['autoRenew'] or state.get('scheduledBooking') or (state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE'):
                 worker.tick(targets_only=bool(state['running'] and complete_catalog),
                             reservation_only=bool(state['autoRenew'] and not state['running'] and recent_catalog))
         self._execute(poll, cron=True)

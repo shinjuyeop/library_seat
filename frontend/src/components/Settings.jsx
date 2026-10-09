@@ -14,9 +14,12 @@ export default function Settings({ data, busy, reachable, onDisconnect, onLogout
     </section>
     {push && <NotificationSettings push={push} busy={busy} reachable={reachable} />}
     <section className="card help-card" aria-labelledby="guide-heading"><h2 id="guide-heading">이용 안내</h2>
-      <ul><li><strong>예약과 동시에 배정확정</strong><p>공통 태그로 모든 열람실에서 자동 확정합니다. 확정에 실패하면 공식 앱에서 NFC 인증을 확인해 주세요.</p></li>
-        <li><strong>자동 예약은 화면을 닫아도 계속</strong><p>중지하려면 내 좌석에서 대기를 끄세요. 로그아웃해도 대기는 유지됩니다.</p></li>
-        <li><strong>빈자리는 바로 예약·확정</strong><p>사용 중인 좌석만 대기합니다. 임시배정 자동 재예약은 사용하지 않습니다.</p></li></ul>
+      <ul><li><strong>빈자리는 바로 예약·확정</strong><p>빈 좌석을 선택하면 바로 예약하고 배정확정합니다. 전체 좌석에서는 열람실별 현황을 보고 좌석 번호로 검색할 수 있습니다.</p></li>
+        <li><strong>여러 좌석 대기와 갈아타기</strong><p>사용 중인 좌석을 여러 개 선택해 대기할 수 있습니다. 먼저 확보한 한 자리로 확정하며, 내 좌석이 있으면 유지하다가 갈아탑니다. 실패 시 원래 자리의 복구·확정을 시도하지만 자리를 잃을 수 있습니다.</p></li>
+        <li><strong>자동 연장은 기본으로 켜짐</strong><p>잔여 1시간 59분에 연장합니다. 횟수를 모두 사용하면 같은 자리 재배정·확정 후 계속 연장합니다. 내 좌석에서 끌 수 있으며, 23시~05시에는 한 번 실패하면 재시도를 멈춥니다.</p></li>
+        <li><strong>다음 오전 시간 예약</strong><p>전날 오후 12시부터 당일 오전 5시 전까지 등록하세요. 오전 5시~11시 50분 중 10분 단위로 예약·확정하고 자동 연장을 켭니다. 실패하면 종료하며 이용 중인 좌석은 반납하지 않습니다.</p></li>
+        <li><strong>화면을 닫아도 실행·알림</strong><p>운영 서버에서 대기·시간 예약·자동 연장을 계속합니다. 위 알림 설정에서 성공·실패 알림을 켜세요. iPhone은 홈 화면에 추가한 웹앱에서 허용해야 합니다.</p></li>
+        <li><strong>배정 상태 확인</strong><p>확정에 실패하거나 결과가 불명확하면 공식 앱에서 상태와 NFC 인증을 확인하세요. 반납 후 다시 배정은 내 좌석에서 실행할 수 있습니다.</p></li></ul>
     </section>
     <details className="history"><summary>최근 활동 <span>{data.events.length}건</span></summary>
       <ol id="events">{data.events.map((item, index) => <li key={item.time + ':' + index}><time>{timeLabel(item.time)}</time><span>{item.text}</span></li>)}</ol>

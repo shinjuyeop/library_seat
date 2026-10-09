@@ -20,7 +20,7 @@ export default function ActionBar({ data, selected, selecting, tab, busy, reacha
       {busy ? '처리 중…' : data.reservation ? '갈아타기 대기' : '자동 예약 시작'}
     </button>
   </div>;
-  if (tab === 'my' || (!data.reservation && !data.running && !data.repeat)) return null;
+  if (tab === 'my' || (!data.reservation && !data.running)) return null;
   const reservation = data.reservation;
   const state = !reachable || !data.connected || data.error || !data.reservationFresh ? '상태 확인 필요'
     : reservation?.state === 'TEMP_CHARGE' ? '임시배정 · 확정 필요'

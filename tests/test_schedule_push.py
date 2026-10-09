@@ -81,7 +81,7 @@ class ScheduleTests(ServiceFixture):
     def test_no_early_booking_login_read_only_and_cancel(self):
         job = self.register()
         self.clock.return_value = MORNING
-        self.service.tick(allow_repeat=False)
+        self.service.tick(allow_actions=False)
         self.reserve.assert_not_called()
         with self.assertRaises(LibraryError):
             self.service.cancel_schedule('stale')

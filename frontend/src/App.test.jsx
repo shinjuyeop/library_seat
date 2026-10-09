@@ -304,7 +304,7 @@ describe('React app with the existing account API', () => {
   it('keeps failed login on the password form and clears the password', async () => {
     signedIn = false;
     render(<App />);
-    const username = await screen.findByLabelText('아이디 / 학번'),
+    const username = await screen.findByLabelText('아이디'),
       password = screen.getByLabelText('비밀번호');
     fireEvent.change(username, { target: { value: 'demo' } });
     fireEvent.change(password, { target: { value: 'wrong-password' } });
@@ -794,29 +794,19 @@ describe('polling and concurrent user actions', () => {
     expect(writes('refresh')).toHaveLength(0);
   });
 
-  it('detects a new repeat reservation for the same seat even across a cancellation snapshot', async () => {
-    vi.useFakeTimers();
+  it('detects a confirmed reassignment across an empty intermediate snapshot', async () => {
     data.reservation = {
-      id: 'repeat-1', state: 'TEMP_CHARGE', roomName: '2열람실', seatNo: '3', startedAt: 100,
+      id: 'old-1', state: 'CHARGE', roomName: '2열람실', seatNo: '3', startedAt: 100,
     };
-    data.repeat = { reservationId: 'repeat-1', dueAt: Date.now() / 1000 + 2 };
-    render(<App />);
-    await act(async () => {});
-    expect(document.getElementById('toast')).toBeNull();
+    const { result } = renderHook(useLibrary);
+    await waitFor(() => expect(result.current.data).not.toBeNull());
     data.reservation = null;
-    data.repeat = null;
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
+    await act(() => result.current.refresh());
     data.reservation = {
-      id: 'repeat-2', state: 'TEMP_CHARGE', roomName: '2열람실', seatNo: '3', startedAt: 200,
+      id: 'new-2', state: 'CHARGE', roomName: '2열람실', seatNo: '3', startedAt: 200,
     };
-    data.repeat = { reservationId: 'repeat-2', dueAt: Date.now() / 1000 + 540 };
-    await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-    expect(document.getElementById('toast').textContent).toBe('자동 재예약 완료 · 2열람실 3번');
-    expect(document.getElementById('reservation-result').textContent).toMatch(/자동 재예약 완료 · .* 확인/);
-    expect(document.activeElement.id).not.toBe('reservation');
-    expect(screen.getByRole('heading', { name: '좌석 찾기', level: 1 })).toBeTruthy();
-    expect(screen.getByRole('button', { name: '내 좌석 보기' })).toBeTruthy();
-    expect(writes('repeat')).toHaveLength(0);
+    await act(() => result.current.refresh());
+    expect(result.current.toast).toBe('재배정·확정 완료 · 2열람실 3번');
     expect(writes('reserve')).toHaveLength(0);
   });
 
@@ -843,13 +833,13 @@ describe('polling and concurrent user actions', () => {
     expect(result.current.toast).toBe('배정 완료 · 2열람실 3번');
   });
 
-  it('checks more often while waiting or near a repeat deadline', () => {
+  it('checks more often while waiting or near an auto-renewal deadline', () => {
     expect(pollDelay({ running: true, interval: 1 }, 100)).toBe(1000);
     expect(pollDelay({ running: true, interval: 30 }, 100)).toBe(2000);
-    expect(pollDelay({ repeat: { dueAt: 640 } }, 100)).toBe(5000);
-    expect(pollDelay({ repeat: { dueAt: 112 } }, 100)).toBe(2000);
-    expect(pollDelay({ repeat: { dueAt: 110 } }, 100)).toBe(1000);
-    expect(pollDelay({ repeat: { dueAt: 99 } }, 100)).toBe(1000);
+    expect(pollDelay({ autoRenew: { status: 'scheduled', dueAt: 640 } }, 100)).toBe(5000);
+    expect(pollDelay({ autoRenew: { status: 'scheduled', dueAt: 112 } }, 100)).toBe(2000);
+    expect(pollDelay({ autoRenew: { status: 'scheduled', dueAt: 110 } }, 100)).toBe(1000);
+    expect(pollDelay({ autoRenew: { status: 'scheduled', dueAt: 99 } }, 100)).toBe(1000);
     expect(pollDelay({ running: false, repeat: null }, 100)).toBe(15000);
   });
 

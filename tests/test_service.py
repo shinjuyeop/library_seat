@@ -24,7 +24,43 @@ class ServiceFixture(unittest.TestCase):
         self.service = SeatService(self.store, client=self.client)
 
 
+class LocalLoginTests(ServiceFixture):
+    def test_local_login_uses_the_same_http_login_and_verifies_reservation(self):
+        credentials = {'token': 'synthetic-token', 'cookies': {}, 'identity': 'synthetic-user'}
+        candidate = DemoClient()
+        candidate.reservation = Mock(wraps=candidate.reservation)
+        with patch('library_login.login_to_library', return_value=credentials) as login, \
+                patch('seat_service.LibraryClient', return_value=candidate) as client:
+            self.service._login('synthetic-id', 'synthetic-password')
+        login.assert_called_once_with('synthetic-id', 'synthetic-password')
+        client.assert_called_once_with('synthetic-token', {})
+        candidate.reservation.assert_called_once()
+        self.assertTrue(self.service.snapshot()['connected'])
+        self.assertFalse(self.service.snapshot()['connecting'])
+
+    def test_failed_local_login_closes_unverified_client_and_never_connects_it(self):
+        self.service.client = None
+        self.service._update(connected=False)
+        candidate = Mock()
+        candidate.reservation.side_effect = LibraryError('synthetic read failure')
+        with patch('library_login.login_to_library', return_value={'token': 'synthetic-token', 'cookies': {}}), \
+                patch('seat_service.LibraryClient', return_value=candidate):
+            self.service._login('synthetic-id', 'synthetic-password')
+        candidate.close.assert_called_once()
+        self.assertIsNone(self.service.client)
+        self.assertFalse(self.service.snapshot()['connected'])
+
+
 class WorkerTests(ServiceFixture):
+    def test_read_only_tick_never_books_a_waiting_free_seat(self):
+        self.service.set_wait(['102:3'], True)
+        self.client.reserve = Mock(wraps=self.client.reserve)
+        self.service.tick(allow_actions=False)
+        self.client.reserve.assert_not_called()
+        self.assertTrue(self.service.snapshot()['running'])
+        self.service.tick()
+        self.client.reserve.assert_called_once_with(102003)
+
     def test_all_six_rooms_and_non_single_seats_are_available(self):
         from seat_service import ROOMS, SINGLE_SEATS
         self.service.tick()
@@ -518,6 +554,15 @@ class FakeCloudStore:
 
 
 class CloudTests(unittest.TestCase):
+    def test_cloud_app_has_no_shared_password_or_unused_password_hash(self):
+        with patch('webapp.generate_password_hash') as hash_password:
+            browser = create_app(self.root, secure_cookie=False).test_client()
+        hash_password.assert_not_called()
+        session = browser.get('/api/session').json
+        self.assertTrue(session['directLogin'])
+        self.assertEqual(browser.post('/api/login', json={'password': 'irrelevant'},
+            headers={'X-CSRF-Token': session['csrf']}).status_code, 410)
+
     def setUp(self):
         self.store = FakeCloudStore()
         self.key = Fernet.generate_key()

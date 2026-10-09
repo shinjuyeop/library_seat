@@ -8,10 +8,6 @@ export function pollDelay(data, now = Date.now() / 1000, settlingUntil = 0) {
   if (data.scheduledBooking?.status === 'working') return 1000;
   if (data.scheduledBooking?.status === 'pending') return Math.max(1000, Math.min(5000, (data.scheduledBooking.dueAt - now - 10) * 1000));
   if (data.running) return data.interval === 1 ? 1000 : 2000;
-  if (data.repeat) {
-    const untilFastPoll = (data.repeat.dueAt - now - 10) * 1000;
-    return Math.max(1000, Math.min(5000, untilFastPoll));
-  }
   if (data.autoRenew?.status === 'working') return 1000;
   if (data.autoRenew?.status === 'scheduled')
     return Math.max(1000, Math.min(5000, (data.autoRenew.dueAt - now - 10) * 1000));
@@ -56,9 +52,7 @@ export function useLibrary() {
       if (!controller.signal.aborted && revision.current === version) {
         const previous = latest.current.data;
         // The server disarms a job before writing. Keep checking through that gap.
-        if (!data.error &&
-          ((previous?.running && !data.running && !data.reservation) ||
-            (previous?.repeat && !data.repeat))) {
+        if (!data.error && previous?.running && !data.running && !data.reservation) {
           settling.current = {
             until: Date.now() / 1000 + 15,
             reservationId: previous.reservation?.id,
@@ -127,7 +121,7 @@ export function useLibrary() {
       window.removeEventListener('focus', resume);
       window.removeEventListener('offline', offline);
     };
-  }, [refresh, patch, model.pollRevision, model.data?.running, model.data?.interval, model.data?.repeat?.dueAt, model.data?.autoRenew?.dueAt, model.data?.autoRenew?.status, model.data?.scheduledBooking?.dueAt, model.data?.scheduledBooking?.status]);
+  }, [refresh, patch, model.pollRevision, model.data?.running, model.data?.interval, model.data?.autoRenew?.dueAt, model.data?.autoRenew?.status, model.data?.scheduledBooking?.dueAt, model.data?.scheduledBooking?.status]);
 
   useEffect(() => {
     if (!model.toast) return;
@@ -175,8 +169,7 @@ export function useLibrary() {
       if (path === 'reserve' || path === 'confirm' || path === 'reassign' || path === 'renew' || (path === 'wait' && body.running) ||
         (path === 'wait/seat' && body.enabled))
         settling.current = { until: Date.now() / 1000 + 15, reservationId: null };
-      if (path === 'release' || (path === 'wait' && !body.running) ||
-        (path === 'repeat' && !body.enabled))
+      if (path === 'release' || (path === 'wait' && !body.running))
         settling.current.until = 0;
       if (path === 'release')
         patch({ reservationNotice: null, observedReservation: null, toast: '' });

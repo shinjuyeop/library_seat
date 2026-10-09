@@ -45,9 +45,6 @@ export function libraryReducer(state, action) {
         (!previous || previous.id !== reservation.id ||
           (previous.startedAt && reservation.startedAt &&
             previous.startedAt !== reservation.startedAt));
-      const repeated = changed && previous?.repeatId === previous?.id &&
-        previous?.roomName === reservation.roomName &&
-        previous?.seatNo === reservation.seatNo;
       const confirmed = verified && previous?.id === reservation.id &&
         previous.state === 'TEMP_CHARGE' && ['CHARGE', 'IN_USE'].includes(reservation.state);
       const renewed = verified && previous?.id === reservation.id &&
@@ -60,7 +57,7 @@ export function libraryReducer(state, action) {
       const notice = !action.data.error && (changed || confirmed || renewed) ? {
         id: reservation.id,
         at: Date.now() / 1000,
-        message: `${renewed ? '연장 완료' : reassigned ? '재배정·확정 완료' : allocationConfirmed ? '배정 확정 완료' : repeated ? '자동 재예약 완료' : '배정 완료'} · ${reservation.roomName} ${reservation.seatNo}번`,
+        message: `${renewed ? '연장 완료' : reassigned ? '재배정·확정 완료' : allocationConfirmed ? '배정 확정 완료' : '배정 완료'} · ${reservation.roomName} ${reservation.seatNo}번`,
       } : null;
       const reset =
         !state.dirty ||
@@ -71,9 +68,7 @@ export function libraryReducer(state, action) {
         data: action.data,
         reachable: true,
         ...(verified ? {
-          observedReservation: {
-            ...reservation, repeatId: action.data.repeat?.reservationId,
-          },
+          observedReservation: { ...reservation },
         } : {}),
         ...(notice ? { reservationNotice: notice, toast: notice.message } : {}),
         ...(reset ? { selected: action.data.targets, dirty: false } : {}),

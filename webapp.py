@@ -18,8 +18,9 @@ from library_login import LoginError
 import push_notifications as push
 
 
-def create_app(service, password, *, secret=None, secure_cookie=True):
-    if len(password) < 16:
+def create_app(service, password=None, *, secret=None, secure_cookie=True):
+    cloud = getattr(service, 'cloud', False)
+    if not cloud and (not isinstance(password, str) or len(password) < 16):
         raise ValueError('LIBRARY_WEB_PASSWORD must be at least 16 characters.')
     app = Flask(__name__, static_folder='public/assets', static_url_path='/assets')
     app.config.update(
@@ -28,7 +29,7 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
         SESSION_COOKIE_SECURE=secure_cookie, PERMANENT_SESSION_LIFETIME=timedelta(days=30),
         TRUSTED_HOSTS=os.getenv('LIBRARY_TRUSTED_HOSTS', '').split(',') if os.getenv('LIBRARY_TRUSTED_HOSTS') else None,
     )
-    password_hash = generate_password_hash(password)
+    password_hash = None if cloud else generate_password_hash(password)
     attempts = OrderedDict()
     throttle_lock = threading.Lock()
 
@@ -177,7 +178,7 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
             return jsonify(error='계정 정보를 입력해 주세요.'), 400
         username, library_password = body.get('username'), body.get('password')
         if not all(isinstance(value, str) and 0 < len(value) <= 256 for value in (username, library_password)):
-            return jsonify(error='학번과 도서관 비밀번호를 입력해 주세요.'), 400
+            return jsonify(error='아이디와 도서관 비밀번호를 입력해 주세요.'), 400
         if getattr(service, 'cloud', False):
             return jsonify(error='로그인 화면에서 다시 연결해 주세요.'), 409
         service.connect(username, library_password)
@@ -309,10 +310,6 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
         else:
             service.wake.set()
         return jsonify(ok=True)
-
-    @app.post('/api/connect-token')
-    def connect_token():
-        return jsonify(error='PC 연결 도구 대신 웹에서 도서관 계정으로 로그인해 주세요.'), 410
 
     @app.post('/api/cron')
     def cron():
