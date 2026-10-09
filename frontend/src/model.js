@@ -46,10 +46,11 @@ export function libraryReducer(state, action) {
       const reassigned = changed && ['CHARGE', 'IN_USE'].includes(reservation.state) &&
         ['CHARGE', 'IN_USE'].includes(previous?.state) &&
         previous.roomName === reservation.roomName && previous.seatNo === reservation.seatNo;
+      const allocationConfirmed = verified && ['CHARGE', 'IN_USE'].includes(reservation.state);
       const notice = !action.data.error && (changed || confirmed) ? {
         id: reservation.id,
         at: Date.now() / 1000,
-        message: `${reassigned ? '재배정·확정 완료' : confirmed ? '배정 확정 완료' : repeated ? '자동 재예약 완료' : '배정 완료'} · ${reservation.roomName} ${reservation.seatNo}번`,
+        message: `${reassigned ? '재배정·확정 완료' : allocationConfirmed ? '배정 확정 완료' : repeated ? '자동 재예약 완료' : '배정 완료'} · ${reservation.roomName} ${reservation.seatNo}번`,
       } : null;
       const reset =
         !state.dirty ||

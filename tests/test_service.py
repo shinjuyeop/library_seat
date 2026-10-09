@@ -826,6 +826,45 @@ class CloudTests(unittest.TestCase):
         self.assertIsNotNone(other.snapshot()['repeat'])
         self.assertEqual(client.reserve.call_count, 2)
 
+    def test_cloud_switch_and_recovery_confirmation_persist_under_account_lease(self):
+        with patch.dict('os.environ', {'LIBRARY_NFC_TAGS': json.dumps({'102': '0123456789ABCDEF'})}):
+            alice, bob = self.login(), self.login('bob')
+            client = self.clients['alice']
+            client.reserve(102006)
+            client.confirm_reservation(client.current['id'])
+            alice.set_wait(['102:3', '232:3'], True)
+            reserve = client.reserve
+            def reject_target(seat_id):
+                if seat_id == 102003:
+                    raise LibraryError('occupied')
+                reserve(seat_id)
+            client.reserve = Mock(side_effect=reject_target)
+            arrival = client.check_arrival
+            def guarded_arrival(room_id, tag):
+                saved = alice.store.read()['state']
+                self.assertFalse(saved['running'])
+                self.assertIsNone(saved['repeat'])
+                self.assertTrue(saved['repeatControl']['paused'])
+                with self.assertRaises(LibraryError):
+                    alice.tick()
+                arrival(room_id, tag)
+            client.check_arrival = Mock(side_effect=guarded_arrival)
+            alice.tick()
+            persisted = CloudService(alice.store, self.key).snapshot()
+            self.assertTrue(persisted['running'])
+            self.assertEqual(persisted['reservation']['seatId'], 102006)
+            self.assertEqual(persisted['reservation']['state'], 'CHARGE')
+            self.assertIsNone(persisted['repeat'])
+            self.assertIsNone(bob.snapshot()['reservation'])
+            client.reserve = Mock(wraps=reserve)
+            alice.tick()
+            persisted = CloudService(alice.store, self.key).snapshot()
+            self.assertFalse(persisted['running'])
+            self.assertEqual(persisted['reservation']['seatId'], 102003)
+            self.assertEqual(persisted['reservation']['state'], 'CHARGE')
+            self.assertIsNone(persisted['repeat'])
+            self.assertEqual(client.check_arrival.call_count, 2)
+
     def test_existing_temporary_seat_login_only_arms_repeat_without_cancelling(self):
         client = self.clients['alice']
         client.reserve(101021)

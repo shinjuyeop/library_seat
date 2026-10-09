@@ -459,7 +459,7 @@ class SeatService:
                                 if current and str(current.get('seatId')) == str(seat['id']):
                                     continue
                                 if current:
-                                    self._switch_reserve(seat, current)
+                                    self._switch_reserve(seat, current, auto_confirm=True)
                                 else:
                                     self._reserve(seat)
                                 break
@@ -623,7 +623,7 @@ class SeatService:
         self._event('좌석을 확보했습니다. 임시배정 자동 재예약은 9분마다 실행되며 NFC 인증 시 종료됩니다.'
                     if self.snapshot()['repeat'] else '좌석을 확보했습니다. 내 좌석에서 배정 상태를 확인해 주세요.')
 
-    def _confirm_booking(self, seat, booked_at):
+    def _confirm_booking(self, seat, booked_at, *, start_repeat=True, previous_id=None):
         reservation = self.client.reservation()
         if (reservation and reservation['state'] == 'TEMP_CHARGE'
                 and str(reservation.get('seatId')) == str(seat['id'])
@@ -631,11 +631,26 @@ class SeatService:
             reservation['startedAt'] = booked_at
         self._update(reservation=reservation, reservationFresh=True)
         if (not reservation or reservation['state'] not in ACTIVE_STATES
+                or reservation['id'] == previous_id
                 or str(reservation.get('seatId')) != str(seat['id'])
                 or str(reservation.get('roomId')) != str(seat['roomId'])):
             raise LibraryError('예약 결과를 확인할 수 없습니다. 내 좌석을 새로고침해 주세요.')
-        self._auto_repeat(reservation, force=True)
+        if start_repeat:
+            self._auto_repeat(reservation, force=True)
+        else:
+            # Automatic confirmation must never briefly arm the nine-minute repeat.
+            self._update(repeat=None, repeatControl={'observedId': reservation['id'], 'paused': True})
         self._save()
+
+    def _confirm_switched_seat(self, *, recovered=False):
+        reservation = self.snapshot()['reservation']
+        try:
+            self.confirm(reservation['id'])
+        except LibraryError as error:
+            label = '원래 좌석 복구' if recovered else '새 좌석 예약'
+            message = f'{label} 후 배정확정을 확인하지 못해 대기를 중지했습니다. 내 좌석에서 배정 상태를 확인해 주세요. {error}'
+            self._event(message)
+            raise LibraryError(message, expired=error.expired, uncertain=error.uncertain) from error
 
     @staticmethod
     def _validate_switch_source(reservation):
@@ -645,7 +660,7 @@ class SeatService:
                 or int(reservation['roomId']) not in ROOMS):
             raise LibraryError('기존 좌석 상태나 식별 정보를 확인할 수 없어 갈아타기를 중지했습니다.')
 
-    def _switch_reserve(self, seat, current):
+    def _switch_reserve(self, seat, current, *, auto_confirm=False):
         self._validate_switch_source(current)
         previous = self.snapshot()
         # Persist before releasing: neither a crash nor an unknown result may replay the switch.
@@ -671,22 +686,36 @@ class SeatService:
                 raise LibraryError('새 좌석 요청 후 배정 상태가 변경되었습니다. 내 좌석을 확인해 주세요.') from error
             original = {'id': current['seatId'], 'roomId': int(current['roomId']),
                         'roomName': current['roomName'], 'number': current['seatNo']}
+            confirm_original = auto_confirm and original['roomId'] in self.nfc_tags
             recovered_at = time.time()
             try:
                 self.client.reserve(original['id'])
-                self._confirm_booking(original, recovered_at)
+                self._confirm_booking(original, recovered_at, start_repeat=not confirm_original,
+                                      previous_id=current['id'])
             except LibraryError as recovery_error:
                 self._event('새 좌석 예약과 원래 좌석 재예약에 실패했습니다. 내 좌석을 확인해 주세요.')
                 raise LibraryError('새 좌석 예약과 원래 좌석 재예약에 실패했습니다. 내 좌석을 확인해 주세요.',
                                    expired=recovery_error.expired, uncertain=recovery_error.uncertain) from recovery_error
+            # A failed confirmation is not a failed recovery: preserve the acquired
+            # temporary seat and stop, without cancelling it or trying other targets.
+            if confirm_original:
+                self._confirm_switched_seat(recovered=True)
             self._update(running=previous['running'], targets=previous['targets'])
             self._save()
-            self._event('새 좌석 예약에 실패해 원래 좌석을 다시 예약했습니다. 예약 대기는 계속됩니다.'
-                        if previous['running'] else '새 좌석 예약에 실패해 원래 좌석을 다시 예약했습니다.')
+            message = ('새 좌석 예약에 실패해 원래 좌석을 다시 예약하고 배정확정까지 완료했습니다.'
+                       if confirm_original else '새 좌석 예약에 실패해 원래 좌석을 다시 예약했습니다.')
+            if auto_confirm and not confirm_original:
+                message += ' 이 열람실은 공식 앱에서 NFC 인증이 필요합니다.'
+            self._event(message + (' 예약 대기는 계속됩니다.' if previous['running'] else ''))
             return
-        self._confirm_booking(seat, booked_at)
+        confirm_target = auto_confirm and int(seat['roomId']) in self.nfc_tags
+        self._confirm_booking(seat, booked_at, start_repeat=not confirm_target, previous_id=current['id'])
+        if confirm_target:
+            self._confirm_switched_seat()
         self._save()
-        self._event('선택한 좌석으로 갈아타기를 완료했습니다. 나머지 예약 대기는 종료했습니다.')
+        self._event('선택한 좌석으로 갈아타기와 배정확정을 완료했습니다. 나머지 예약 대기는 종료했습니다.'
+                    if confirm_target else '선택한 좌석으로 갈아타기를 완료했습니다. 나머지 예약 대기는 종료했습니다.'
+                    + (' 이 열람실은 공식 앱에서 NFC 인증이 필요합니다.' if auto_confirm else ''))
 
     def reserve(self, key):
         with self.operation:

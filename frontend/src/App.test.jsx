@@ -243,7 +243,7 @@ describe('React app with the existing account API', () => {
     expect(seat('2열람실 31번 1분 대기 선택').getAttribute('aria-pressed')).toBe('true');
     fireEvent.click(screen.getByRole('button', { name: '갈아타기 대기', exact: true }));
     expect(writes('wait')).toHaveLength(0);
-    expect(within(screen.getByRole('dialog')).getByText(/지금은 현재 좌석을 유지/)).toBeTruthy();
+    expect(within(screen.getByRole('dialog')).getByText(/새 좌석과 복구 좌석 모두 자동으로 배정확정/)).toBeTruthy();
     fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '갈아타기 대기 시작' }));
     await screen.findByRole('button', { name: '자동 예약 중지' });
     expect(writes('wait')[0].body).toEqual({ targets: ['232:31'], running: true });
@@ -542,6 +542,40 @@ describe('return and reassign a confirmed seat', () => {
 });
 
 describe('polling and concurrent user actions', () => {
+  it.each([false, true])('shows verified automatic switch or recovery completion (recovered=%s)', async recovered => {
+    data.running = true;
+    data.targets = ['102:3'];
+    data.reservation = { id: '1', state: 'CHARGE', roomName: '1열람실 A', seatNo: '6' };
+    const { result } = renderHook(useLibrary);
+    await waitFor(() => expect(result.current.data?.reservation?.id).toBe('1'));
+    data.reservation = { ...data.reservation, id: '2', seatNo: recovered ? '6' : '3' };
+    data.running = recovered;
+    data.targets = recovered ? ['102:3'] : [];
+    await act(() => result.current.refresh());
+    expect(result.current.toast).toBe(recovered ? '재배정·확정 완료 · 1열람실 A 6번' : '배정 확정 완료 · 1열람실 A 3번');
+    expect(result.current.data.running).toBe(recovered);
+    expect(result.current.data.repeat).toBeNull();
+    expect(writes('confirm')).toHaveLength(0);
+  });
+
+  it('does not announce completion when a switched temporary seat fails confirmation', async () => {
+    data.running = true;
+    data.targets = ['102:3'];
+    data.reservation = { id: '1', state: 'CHARGE', roomName: '1열람실 A', seatNo: '6' };
+    const { result } = renderHook(useLibrary);
+    await waitFor(() => expect(result.current.data?.reservation?.id).toBe('1'));
+    data.reservation = { ...data.reservation, id: '2', seatNo: '3', state: 'TEMP_CHARGE' };
+    data.running = false;
+    data.targets = [];
+    data.error = '새 좌석 예약 후 배정확정을 확인하지 못해 대기를 중지했습니다.';
+    data.reservationFresh = false;
+    await act(() => result.current.refresh());
+    expect(result.current.toast).toBe('');
+    expect(result.current.data.error).toBe(data.error);
+    expect(result.current.data.reservation.state).toBe('TEMP_CHARGE');
+    expect(result.current.data.running).toBe(false);
+  });
+
   it('keeps checking when a wait job disarms before its first response is shown', async () => {
     vi.useFakeTimers();
     const { result } = renderHook(useLibrary);

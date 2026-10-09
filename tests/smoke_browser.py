@@ -16,7 +16,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from werkzeug.serving import make_server
-from seat_service import DemoClient, SeatService, SettingsStore
+from seat_service import DemoClient, LibraryError, SeatService, SettingsStore
 from webapp import create_app
 
 
@@ -53,7 +53,9 @@ def main():
 
         def query(value):
             search = visible('#seat-search')
-            search.clear()
+            # WebDriver clear() can miss React's input event; use actual keystrokes.
+            search.send_keys(Keys.CONTROL, 'a')
+            search.send_keys(Keys.BACKSPACE)
             if value:
                 search.send_keys(value)
             search.send_keys(Keys.ENTER)
@@ -209,6 +211,50 @@ def main():
             assert not service.snapshot()['repeat'] and not service.snapshot()['running']
             no_overflow()
             screenshot('ios-reassigned')
+            # A contested target first restores and confirms the original seat, then
+            # a later vacancy switches and confirms automatically. Demo requests only.
+            base_reserve, base_seats = client.reserve, client.seats
+            contention = {'rejected': False, 'occupied': False}
+            def contested_reserve(seat_id):
+                if seat_id == 102006 and not contention['rejected']:
+                    contention.update(rejected=True, occupied=True)
+                    raise LibraryError('데모: 다른 이용자가 먼저 예약했습니다.')
+                base_reserve(seat_id)
+            def contested_seats(room_id):
+                rows = base_seats(room_id)
+                for row in rows:
+                    if row['id'] == 102006 and contention['occupied']:
+                        row['isOccupied'] = True
+                return rows
+            client.reserve, client.seats = contested_reserve, contested_seats
+            tab('find')
+            click('[data-view="all"]')
+            query('6')
+            click('.browse-toolbar button')
+            click('.seat-cell[aria-label="1열람실 A 6번 빈자리 대기 선택"]')
+            click('#start-stop')
+            assert '새 좌석과 복구 좌석 모두 자동으로 배정확정' in visible('#confirm-dialog').text
+            screenshot('ios-auto-confirm-wait-dialog')
+            click('#confirm-dialog .primary')
+            wait.until(lambda d: (current := service.snapshot()['reservation']) and current['id'] != reassigned['id'] and current['state'] == 'CHARGE')
+            recovered = service.snapshot()
+            assert recovered['reservation']['seatId'] == reassigned['seatId']
+            assert recovered['running'] and not recovered['repeat']
+            # A poll may observe the intermediate TEMP_CHARGE state, in which case
+            # the final notice is "배정 확정 완료" rather than "재배정·확정 완료".
+            wait.until(lambda d: visible('#reservation-badge').text == '배정 확정'
+                       and '확정 완료' in visible('#reservation-result').text)
+            visible('#wait-status')
+            screenshot('ios-recovered-confirmed-wait')
+            with service.operation:
+                contention['occupied'] = False
+            service.wake.set()
+            wait.until(lambda d: (current := service.snapshot()['reservation']) and current['seatId'] == 102006 and current['state'] == 'CHARGE')
+            wait.until(lambda d: '1열람실 A' in visible('#reservation-seat').text and '배정 확정 완료' in visible('#toast').text)
+            assert not service.snapshot()['running'] and not service.snapshot()['repeat']
+            no_overflow()
+            screenshot('ios-switched-confirmed')
+            client.reserve, client.seats = base_reserve, base_seats
             click('#release')
             click('#confirm-dialog .primary')
             wait.until(EC.invisibility_of_element_located((By.ID, 'reservation')))
@@ -230,7 +276,7 @@ def main():
             screenshot('desktop')
             errors = [entry for entry in driver.get_log('browser') if entry['level'] == 'SEVERE']
             assert not errors, json.dumps(errors)
-            print('PASS: 320/390px and desktop layout, 16px search, tab persistence, sheet focus, booking, repeat without navigation jump, live wait additions/removals, held-seat waiting, multiple selection, switching, confirmation, return-reassign-confirm, release; no browser errors')
+            print('PASS: mobile/desktop layout, search, tabs, booking, repeat, live waiting edits, manual switching, confirmation, return-reassign-confirm, automatic recovery+confirmation+resumed waiting, automatic switch+confirmation, release; no browser errors')
         except Exception:
             screenshot('failure')
             raise
