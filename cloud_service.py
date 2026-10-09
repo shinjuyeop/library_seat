@@ -101,7 +101,8 @@ class CloudService:
         state['confirmationRooms'] = sorted(configured_nfc_tags())
         state.update(cloud=True, connected=bool(document.get('credential')), autoLogin=bool(document.get('login')), schedulerLastSeen=document.get('schedulerLastSeen'))
         heartbeat = document.get('schedulerLastSeen')
-        if (state['running'] or state['repeat']) and (not heartbeat or time.time() - heartbeat > 120):
+        active_renewal = state.get('autoRenew') and state['autoRenew']['status'] in {'scheduled', 'retry', 'working'}
+        if (state['running'] or state['repeat'] or active_renewal) and (not heartbeat or time.time() - heartbeat > 120):
             state['error'] = '자동 실행 연결을 확인할 수 없습니다. 잠시 후 다시 확인해 주세요.'
             state['reservationFresh'] = False
         return state
@@ -116,6 +117,14 @@ class CloudService:
             due = max(now, state.get('nextCheck') or now)
         elif state['repeat']:
             due = now + 30 if state['error'] else max(now + 1, min(now + 30, state['repeat']['dueAt']))
+        elif state['autoRenew']:
+            plan = state['autoRenew']
+            if plan['status'] in {'paused', 'working', 'night'}:
+                due = now + 300
+                if plan['status'] == 'night':
+                    due = min(due, max(now + 1, state['renewNightUntil'] or now))
+            else:
+                due = max(now + 1, min(now + 30, max(plan['dueAt'], plan.get('retryAt') or 0, state['renewNightUntil'] or 0)))
         elif state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE':
             due = now + 30
         else:
@@ -154,7 +163,7 @@ class CloudService:
             class RuntimeStore:
                 def load(self):
                     return {'targets': state['targets'], 'running': state['running']}
-                def save(self, targets, running, repeat=None, repeat_control=None):
+                def save(self, targets, running, repeat=None, repeat_control=None, auto_renew=None, renew_night_until=None):
                     document['state'] = worker.snapshot()
                     CloudService._schedule_document(document, worker)
                     # Disarm retries before an external reservation write.
@@ -251,6 +260,12 @@ class CloudService:
     def set_repeat(self, enabled, expected_id):
         self._execute(lambda worker: worker.set_repeat(enabled, expected_id))
 
+    def renew(self, expected_id):
+        self._execute(lambda worker: worker.renew(expected_id))
+
+    def set_auto_renew(self, enabled, expected_id):
+        self._execute(lambda worker: worker.set_auto_renew(enabled, expected_id))
+
     def refresh(self):
         self._execute(lambda worker: worker.tick())
 
@@ -258,8 +273,10 @@ class CloudService:
         def poll(worker):
             state = worker.snapshot()
             complete_catalog = state.get('catalogVersion') == 1
-            if not complete_catalog or state['running'] or state['repeat'] or (state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE') or time.time() - (state['lastChecked'] or 0) >= 300:
-                worker.tick(targets_only=bool(state['running'] and complete_catalog))
+            recent_catalog = complete_catalog and time.time() - (state['lastChecked'] or 0) < 300
+            if not recent_catalog or state['running'] or state['repeat'] or state['autoRenew'] or (state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE'):
+                worker.tick(targets_only=bool(state['running'] and complete_catalog),
+                            reservation_only=bool(state['autoRenew'] and not state['running'] and recent_catalog))
         self._execute(poll, cron=True)
 
 

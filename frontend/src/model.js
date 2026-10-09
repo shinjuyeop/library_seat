@@ -14,6 +14,13 @@ export const initialModel = {
   pollRevision: 0,
 };
 
+export const libraryTimestamp = value => {
+  if (typeof value !== 'string' || !value.trim()) return null;
+  const iso = value.trim().replace(' ', 'T');
+  const milliseconds = Date.parse(iso + (/Z$|[+-]\d{2}:?\d{2}$/.test(iso) ? '' : '+09:00'));
+  return Number.isFinite(milliseconds) ? milliseconds / 1000 : null;
+};
+
 export function libraryReducer(state, action) {
   switch (action.type) {
     case 'session':
@@ -43,14 +50,17 @@ export function libraryReducer(state, action) {
         previous?.seatNo === reservation.seatNo;
       const confirmed = verified && previous?.id === reservation.id &&
         previous.state === 'TEMP_CHARGE' && ['CHARGE', 'IN_USE'].includes(reservation.state);
+      const renewed = verified && previous?.id === reservation.id &&
+        ['CHARGE', 'IN_USE'].includes(previous?.state) &&
+        libraryTimestamp(previous.endTime) && libraryTimestamp(reservation.endTime) > libraryTimestamp(previous.endTime);
       const reassigned = changed && ['CHARGE', 'IN_USE'].includes(reservation.state) &&
         ['CHARGE', 'IN_USE'].includes(previous?.state) &&
         previous.roomName === reservation.roomName && previous.seatNo === reservation.seatNo;
       const allocationConfirmed = verified && ['CHARGE', 'IN_USE'].includes(reservation.state);
-      const notice = !action.data.error && (changed || confirmed) ? {
+      const notice = !action.data.error && (changed || confirmed || renewed) ? {
         id: reservation.id,
         at: Date.now() / 1000,
-        message: `${reassigned ? '재배정·확정 완료' : allocationConfirmed ? '배정 확정 완료' : repeated ? '자동 재예약 완료' : '배정 완료'} · ${reservation.roomName} ${reservation.seatNo}번`,
+        message: `${renewed ? '연장 완료' : reassigned ? '재배정·확정 완료' : allocationConfirmed ? '배정 확정 완료' : repeated ? '자동 재예약 완료' : '배정 완료'} · ${reservation.roomName} ${reservation.seatNo}번`,
       } : null;
       const reset =
         !state.dirty ||

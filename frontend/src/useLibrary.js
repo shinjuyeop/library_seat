@@ -10,6 +10,9 @@ export function pollDelay(data, now = Date.now() / 1000, settlingUntil = 0) {
     const untilFastPoll = (data.repeat.dueAt - now - 10) * 1000;
     return Math.max(1000, Math.min(5000, untilFastPoll));
   }
+  if (data.autoRenew?.status === 'working') return 1000;
+  if (data.autoRenew?.status === 'scheduled')
+    return Math.max(1000, Math.min(5000, (data.autoRenew.dueAt - now - 10) * 1000));
   return 15000;
 }
 
@@ -122,7 +125,7 @@ export function useLibrary() {
       window.removeEventListener('focus', resume);
       window.removeEventListener('offline', offline);
     };
-  }, [refresh, patch, model.pollRevision, model.data?.running, model.data?.interval, model.data?.repeat?.dueAt]);
+  }, [refresh, patch, model.pollRevision, model.data?.running, model.data?.interval, model.data?.repeat?.dueAt, model.data?.autoRenew?.dueAt, model.data?.autoRenew?.status]);
 
   useEffect(() => {
     if (!model.toast) return;
@@ -167,7 +170,7 @@ export function useLibrary() {
     patch({ busy: true, busyAction: path });
     try {
       await request(path, { body, csrf: session.current?.csrf });
-      if (path === 'reserve' || path === 'confirm' || path === 'reassign' || (path === 'wait' && body.running) ||
+      if (path === 'reserve' || path === 'confirm' || path === 'reassign' || path === 'renew' || (path === 'wait' && body.running) ||
         (path === 'wait/seat' && body.enabled))
         settling.current = { until: Date.now() / 1000 + 15, reservationId: null };
       if (path === 'release' || (path === 'wait' && !body.running) ||

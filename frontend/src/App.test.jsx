@@ -40,6 +40,7 @@ const initialData = () => ({
   reservation: null,
   reservationFresh: true,
   repeat: null,
+  autoRenew: null,
   confirmationRooms: [102],
   events: [],
   interval: 30,
@@ -121,9 +122,17 @@ beforeEach(() => {
     }
     if (path === 'reassign') {
       data.reservation = { ...data.reservation, id: '124', state: 'CHARGE' };
+      if (data.autoRenew) data.autoRenew = { ...data.autoRenew, reservationId: '124' };
       data.repeat = null;
       data.running = false;
       data.targets = [];
+    }
+    if (path === 'auto-renew') {
+      data.autoRenew = body.enabled ? { reservationId: body.id, dueAt: Date.now() / 1000 + 3600, status: 'scheduled' } : null;
+    }
+    if (path === 'renew') {
+      data.reservation = { ...data.reservation, endTime: new Date(Date.now() + 10800000).toISOString(),
+        renewableCnt: data.reservation.renewableCnt - 1, isRenewable: false };
     }
     if (path === 'release') {
       data.reservation = null;
@@ -499,7 +508,7 @@ describe('allocation confirmation', () => {
     expect(writes('confirm')).toHaveLength(1);
     expect(writes('confirm')[0].body).toEqual({ id: '123' });
     expect(writes('confirm')[0].options.headers['X-CSRF-Token']).toBe('test-csrf');
-    expect(screen.queryByRole('switch')).toBeNull();
+    expect(screen.queryByRole('switch', { name: '임시배정 자동 재예약' })).toBeNull();
     expect(screen.getByRole('button', { name: '좌석 반납' })).toBeTruthy();
     expect(writes('release')).toHaveLength(0);
   });
@@ -630,6 +639,94 @@ describe('return and reassign a confirmed seat', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: '좌석 반납 후 다시 배정' }).disabled).toBe(false));
     fireEvent(window, new Event('offline'));
     expect(screen.getByRole('button', { name: '좌석 반납 후 다시 배정' }).disabled).toBe(true);
+  });
+});
+
+describe('seat renewal', () => {
+  beforeEach(() => {
+    data.reservation = { id: '123', roomId: 102, seatId: 102003, roomName: '1열람실 A', seatNo: '3', state: 'CHARGE',
+      endTime: new Date(Date.now() + 7140000).toISOString(), renewableAt: Date.now() / 1000 - 60,
+      renewableCnt: 3, renewalLimit: 3, isRenewable: true, isRenewalImpossible: false };
+  });
+  const openMySeat = async () => {
+    await openApp();
+    fireEvent.click(screen.getByRole('button', { name: '내 좌석', exact: true }));
+  };
+
+  it('shows remaining quota and defaults automation to off', async () => {
+    await openMySeat();
+    expect(screen.getByText('남은 3 / 3회')).toBeTruthy();
+    expect(screen.getByRole('switch', { name: '자동 연장' }).getAttribute('aria-checked')).toBe('false');
+    expect(screen.getByRole('button', { name: '지금 연장' }).disabled).toBe(false);
+    expect(writes('renew')).toHaveLength(0);
+  });
+
+  it('explains automatic reassign and closure before enabling, and disables without returning', async () => {
+    await openMySeat();
+    fireEvent.click(screen.getByRole('switch', { name: '자동 연장' }));
+    expect(within(screen.getByRole('dialog')).getByText(/남은 횟수가 0이면/)).toBeTruthy();
+    expect(within(screen.getByRole('dialog')).getByText(/23시~05시/)).toBeTruthy();
+    expect(writes('auto-renew')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: '자동 연장 켜기' }));
+    await waitFor(() => expect(screen.getByRole('switch', { name: '자동 연장' }).getAttribute('aria-checked')).toBe('true'));
+    expect(writes('auto-renew')[0].body).toEqual({ id: '123', enabled: true });
+    expect(writes('auto-renew')[0].options.headers['X-CSRF-Token']).toBe('test-csrf');
+    fireEvent.click(screen.getByRole('switch', { name: '자동 연장' }));
+    await waitFor(() => expect(data.autoRenew).toBeNull());
+    expect(writes('release')).toHaveLength(0);
+    expect(writes('reassign')).toHaveLength(0);
+  });
+
+  it('manually renews after confirmation and shows verified quota and time changes', async () => {
+    await openMySeat();
+    fireEvent.click(screen.getByRole('button', { name: '지금 연장' }));
+    expect(writes('renew')).toHaveLength(0);
+    fireEvent.click(screen.getByRole('button', { name: '연장하기' }));
+    await screen.findByText('남은 2 / 3회');
+    expect(writes('renew')[0].body).toEqual({ id: '123' });
+    expect(document.getElementById('toast').textContent).toContain('연장 완료');
+    expect(screen.getByRole('button', { name: '지금 연장' }).disabled).toBe(true);
+    expect(data.autoRenew).toBeNull();
+  });
+
+  it('does not claim successful renewal for an unchanged end time', async () => {
+    const normalFetch = fakeFetch.getMockImplementation();
+    fakeFetch.mockImplementation((url, options) => url.endsWith('/renew') ? response({ ok: true }) : normalFetch(url, options));
+    await openMySeat();
+    fireEvent.click(screen.getByRole('button', { name: '지금 연장' }));
+    fireEvent.click(screen.getByRole('button', { name: '연장하기' }));
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(document.getElementById('toast')?.textContent || '').not.toContain('연장 완료');
+  });
+
+  it('shows paused nightly state and keeps enabled auto-renew after reassignment', async () => {
+    data.autoRenew = { reservationId: '123', status: 'night', message: '야간 연장 실패 · 오전 5시까지 자동 연장을 다시 시도하지 않습니다.' };
+    await openMySeat();
+    expect(screen.getByText(/오전 5시까지 자동 연장을/)).toBeTruthy();
+    expect(screen.getByRole('switch', { name: '자동 연장' }).getAttribute('aria-checked')).toBe('true');
+    fireEvent.click(screen.getByRole('button', { name: '좌석 반납 후 다시 배정' }));
+    fireEvent.click(screen.getByRole('button', { name: '반납 후 다시 배정' }));
+    await waitFor(() => expect(data.autoRenew.reservationId).toBe('124'));
+    expect(screen.getByRole('switch', { name: '자동 연장' }).getAttribute('aria-checked')).toBe('true');
+  });
+
+  it('disables early or exhausted manual renewal and keeps the switch available', async () => {
+    data.reservation.endTime = new Date(Date.now() + 10800000).toISOString();
+    data.reservation.renewableCnt = 0;
+    await openMySeat();
+    expect(screen.getByText('남은 0 / 3회')).toBeTruthy();
+    expect(screen.getByRole('button', { name: '지금 연장' }).disabled).toBe(true);
+    expect(screen.getByRole('switch', { name: '자동 연장' }).disabled).toBe(false);
+    fireEvent(window, new Event('offline'));
+    expect(screen.getByRole('switch', { name: '자동 연장' }).disabled).toBe(true);
+  });
+
+  it('shows official NFC guidance for unsupported rooms', async () => {
+    data.reservation.roomId = 234;
+    await openMySeat();
+    expect(screen.getByText('공식 앱에서 NFC로 연장해 주세요.')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: '지금 연장' })).toBeNull();
+    expect(screen.queryByRole('switch', { name: '자동 연장' })).toBeNull();
   });
 });
 

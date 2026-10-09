@@ -6,6 +6,8 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from datetime import datetime
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from selenium import webdriver
@@ -16,7 +18,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from webdriver_manager.chrome import ChromeDriverManager
 from werkzeug.serving import make_server
-from seat_service import DemoClient, LibraryError, SeatService, SettingsStore
+from seat_service import DemoClient, KST, LibraryError, SeatService, SettingsStore
 from webapp import create_app
 
 
@@ -221,6 +223,38 @@ def main():
             assert not service.snapshot()['repeat'], 'confirmed assignment kept repeating'
             assert visible('#release').text == '좌석 반납'
             screenshot('ios-confirmed')
+            # Renew the demo seat, then exercise quota exhaustion under an open-hours clock.
+            with service.operation:
+                client.current.update(endTime=datetime.fromtimestamp(time.time() + 7100, KST).strftime('%Y-%m-%d %H:%M:%S'),
+                                      renewableAt=time.time() - 100)
+                service.tick()
+            driver.execute_script('window.dispatchEvent(new Event("focus"))')
+            wait.until(lambda d: visible('#renew-seat').is_enabled())
+            assert '3 / 3' in visible('#renewal-count').text
+            screenshot('ios-renewal-controls')
+            click('#renew-seat')
+            click('#confirm-dialog .primary')
+            wait.until(lambda d: '2 / 3' in visible('#renewal-count').text)
+            assert '연장 완료' in visible('#toast').text
+            click('#auto-renew-toggle')
+            assert '남은 횟수가 0이면' in visible('#confirm-dialog').text
+            screenshot('ios-auto-renew-confirmation')
+            click('#confirm-dialog .primary')
+            wait.until(lambda d: visible('#auto-renew-toggle').get_attribute('aria-checked') == 'true')
+            prior_renewal_id = service.snapshot()['reservation']['id']
+            with patch('seat_service.closed_until', return_value=None):
+                with service.operation:
+                    client.current.update(renewableCnt=0, renewableAt=time.time() - 100,
+                        endTime=datetime.fromtimestamp(time.time() + 7100, KST).strftime('%Y-%m-%d %H:%M:%S'))
+                    service.tick()
+            driver.execute_script('window.dispatchEvent(new Event("focus"))')
+            wait.until(lambda d: '3 / 3' in visible('#renewal-count').text)
+            assert service.snapshot()['reservation']['id'] != prior_renewal_id
+            assert service.snapshot()['reservation']['state'] == 'CHARGE'
+            assert service.snapshot()['autoRenew']['reservationId'] == service.snapshot()['reservation']['id']
+            assert visible('#auto-renew-toggle').get_attribute('aria-checked') == 'true'
+            no_overflow()
+            screenshot('ios-auto-renew-reassigned')
             # Return and reassign through one API call, including automatic confirmation.
             original = service.snapshot()['reservation']
             assert driver.execute_script('return document.querySelector("#reassign").nextElementSibling.id') == 'release'
@@ -231,6 +265,7 @@ def main():
             assert service.snapshot()['reservation']['id'] == original['id']
             click('#reassign')
             click('#confirm-dialog .primary')
+            wait.until(lambda d: (current := service.snapshot()['reservation']) and current['id'] != original['id'] and current['state'] == 'CHARGE')
             wait.until(lambda d: '재배정·확정 완료' in visible('#toast').text)
             reassigned = service.snapshot()['reservation']
             assert reassigned['id'] != original['id']
@@ -308,7 +343,7 @@ def main():
             screenshot('desktop-room-overview')
             errors = [entry for entry in driver.get_log('browser') if entry['level'] == 'SEVERE']
             assert not errors, json.dumps(errors)
-            print('PASS: mobile/desktop layout, search, tabs, booking, repeat, live waiting edits, manual switching, confirmation, return-reassign-confirm, automatic recovery+confirmation+resumed waiting, automatic switch+confirmation, release; no browser errors')
+            print('PASS: mobile/desktop layout, rooms, search, booking, repeat, waiting, switching, confirmation, renewal, quota reset with continued auto-renewal, return-reassign-confirm, recovery+confirmation, release; no browser errors')
         except Exception:
             screenshot('failure')
             raise

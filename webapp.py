@@ -227,6 +227,22 @@ def create_app(service, password, *, secret=None, secure_cookie=True):
         account_service().reassign(body['id'])
         return jsonify(ok=True)
 
+    @app.post('/api/renew')
+    def renew():
+        body = request.get_json()
+        if not isinstance(body, dict) or not isinstance(body.get('id'), str) or not re.fullmatch(r'[0-9]{1,20}', body['id']):
+            return jsonify(error='연장할 좌석을 확인해 주세요.'), 400
+        account_service().renew(body['id'])
+        return jsonify(ok=True)
+
+    @app.post('/api/auto-renew')
+    def auto_renew():
+        body = request.get_json()
+        if not isinstance(body, dict) or type(body.get('enabled')) is not bool or not isinstance(body.get('id'), str):
+            return jsonify(error='자동 연장 설정과 내 좌석을 확인해 주세요.'), 400
+        account_service().set_auto_renew(body['enabled'], body['id'])
+        return jsonify(ok=True)
+
     @app.post('/api/release')
     def release():
         body = request.get_json()

@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { timeLabel } from '../model';
+import RenewalControls from './RenewalControls';
 
 function RepeatCountdown({ repeat, paused }) {
   const [now, setNow] = useState(() => Date.now() / 1000);
@@ -41,6 +42,8 @@ export default function ReservationCard({
   onRepeat,
   onConfirm,
   onReassign,
+  onRenew,
+  onAutoRenew,
 }) {
   const { reservation, reservationFresh, repeat } = data;
   if (!reservation && !repeat) return null;
@@ -86,6 +89,7 @@ export default function ReservationCard({
                 ? `마지막 조회 기준 ${reservation.remainingTime}분 남음`
                 : ''}
           </p>
+          <RenewalControls data={data} canAct={canAct} busy={busy} reachable={reachable} onRenew={onRenew} onAutoRenew={onAutoRenew} />
           <div className="reservation-bottom">
             {!confirmed && <p className="fine">
               {temporary

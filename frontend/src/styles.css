@@ -158,6 +158,12 @@ label { display: block; font-size: 14px; font-weight: 550; margin: 20px 0 8px; }
 .reservation-bottom .secondary { color: var(--danger); background: #faf0ef; }
 .repeat-controls { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 22px; }
 .repeat-controls h3 { margin-bottom: 5px; }
+.renewal-controls { border-top: 1px solid var(--line); margin-top: 24px; padding-top: 22px; }
+.renewal-controls h3 { margin-bottom: 5px; }
+.renewal-controls .fine { font-size: 12px; }
+.renewal-controls .text-button { min-height: 44px; white-space: nowrap; }
+.renewal-controls .section-heading { gap: 16px; }
+.auto-renew-row { margin-top: 18px; }
 .repeat-controls .section-heading { gap: 16px; }
 .repeat-controls .fine { font-size: 12px; }
 .repeat-note { font-size: 12px; line-height: 1.75; color: var(--muted); margin-top: 16px; }
