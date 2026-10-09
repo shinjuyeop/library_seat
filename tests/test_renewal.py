@@ -447,6 +447,64 @@ class RenewalTests(ServiceFixture):
         self.client.release.assert_called_once()
         self.client.reserve.assert_not_called()
 
+    def test_switch_crash_disarms_existing_renewal_before_returning_the_seat(self):
+        for count in (0, 2):
+            with self.subTest(count=count):
+                self.due(count=count)
+                self.client.release.reset_mock()
+                def crash(*_):
+                    saved = self.store.load()
+                    self.assertIsNone(saved['autoRenew'])
+                    self.assertEqual(saved['autoRenewDisabledId'], '1')
+                    raise SystemExit('crash')
+                self.client.release.side_effect = crash
+                with self.assertRaises(SystemExit):
+                    self.service.reserve('102:6')
+                self.restart()
+                self.service.tick()
+                self.client.release.assert_called_once()
+                self.client.renew_reservation.assert_not_called()
+                self.assertIsNone(self.service.snapshot()['autoRenew'])
+
+    def test_uncertain_switch_cancellation_never_rearms_the_old_booking(self):
+        self.due(count=0)
+        self.client.release.side_effect = LibraryError('unknown cancellation', uncertain=True)
+        with self.assertRaises(LibraryError):
+            self.service.reserve('102:6')
+        self.restart()
+        self.client.release.assert_called_once()
+        self.client.reserve.assert_not_called()
+        self.client.renew_reservation.assert_not_called()
+        self.assertIsNone(self.service.snapshot()['autoRenew'])
+
+    def test_return_crash_preserves_auto_renew_off_across_restart(self):
+        self.due(count=0)
+        self.client.release.side_effect = SystemExit('crash')
+        with self.assertRaises(SystemExit):
+            self.service.release('1', 'CHARGE')
+        self.restart()
+        self.service.tick()
+        self.client.release.assert_called_once()
+        self.client.renew_reservation.assert_not_called()
+        self.assertIsNone(self.service.snapshot()['autoRenew'])
+        self.assertEqual(self.store.load()['autoRenewDisabledId'], '1')
+
+    def test_switch_success_and_recovery_still_default_new_booking_renewal_on(self):
+        self.due(count=0)
+        self.service.reserve('102:6')
+        self.assertEqual(self.service.snapshot()['autoRenew']['reservationId'], '2')
+        self.assertEqual(self.service.snapshot()['autoRenew']['status'], 'scheduled')
+        reserve = self.client.reserve._mock_wraps
+        def reject_target(seat_id):
+            if seat_id == 102003:
+                raise LibraryError('target occupied')
+            return reserve(seat_id)
+        self.client.reserve.side_effect = reject_target
+        self.service.reserve('102:3')
+        self.assertEqual(self.service.snapshot()['reservation']['seatId'], 102006)
+        self.assertEqual(self.service.snapshot()['autoRenew']['reservationId'], '3')
+        self.assertEqual(self.service.snapshot()['autoRenew']['status'], 'scheduled')
+
     def test_quota_not_reset_after_reassignment_stops_instead_of_looping(self):
         self.due(count=0)
         confirm = self.client.confirm_reservation._mock_wraps
@@ -560,3 +618,18 @@ class RenewalCloudTests(unittest.TestCase):
         self.assertEqual(second_device.snapshot()['autoRenewDisabledId'], '1')
         self.assertEqual(self.clouds['bob'].snapshot()['autoRenew']['reservationId'], '1')
         self.clients['alice'].renew_reservation.assert_not_called()
+
+    def test_switch_crash_cannot_resume_quota_reset_in_another_cloud_invocation(self):
+        alice = self.clouds['alice']
+        client = self.clients['alice']
+        client.current['renewableCnt'] = 0
+        client.release = Mock(side_effect=SystemExit('crash'))
+        with self.assertRaises(SystemExit):
+            alice.reserve('102:6')
+        self.root.login('alice', 'test-password', remember=True)
+        second_device = self.root.for_account(alice.store.account)
+        second_device.tick()
+        client.release.assert_called_once()
+        client.renew_reservation.assert_not_called()
+        self.assertIsNone(second_device.snapshot()['autoRenew'])
+        self.assertEqual(second_device.snapshot()['autoRenewDisabledId'], '1')

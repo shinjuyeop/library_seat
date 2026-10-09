@@ -768,7 +768,8 @@ class SeatService:
         previous = self.snapshot()
         # Persist before releasing: neither a crash nor an unknown result may replay the switch.
         self._update(running=False, targets=[], repeat=None,
-                     repeatControl={'observedId': current['id'], 'paused': True})
+                     repeatControl={'observedId': current['id'], 'paused': True},
+                     autoRenew=None, autoRenewDisabledId=current['id'])
         self._event('기존 좌석을 해제하고 선택한 빈 좌석으로 갈아타기를 시도합니다.')
         self._save()
         self.client.release(current)
@@ -1256,7 +1257,8 @@ class SeatService:
                     self._update(reservation=reservation, reservationFresh=True)
                     raise LibraryError('좌석 상태가 변경되었습니다. 새로고침 후 다시 확인해 주세요.')
                 self._update(running=False, targets=[], repeat=None,
-                             repeatControl={'observedId': reservation['id'], 'paused': True}, autoRenew=None)
+                             repeatControl={'observedId': reservation['id'], 'paused': True},
+                             autoRenew=None, autoRenewDisabledId=reservation['id'])
                 self._save()
                 self.client.release(reservation)
                 self._update(reservation=self.client.reservation(), reservationFresh=True)
