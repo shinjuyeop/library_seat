@@ -284,6 +284,7 @@ class SeatService:
             'repeat': saved.get('repeat'),
             'repeatControl': saved.get('repeatControl') or {'observedId': None, 'paused': False},
             'autoRenew': saved.get('autoRenew'), 'renewNightUntil': saved.get('renewNightUntil'),
+            'autoRenewDisabledId': saved.get('autoRenewDisabledId'),
             'scheduledBooking': saved.get('scheduledBooking'), 'notifications': saved.get('notifications', []),
             'lastChecked': None, 'nextCheck': None, 'error': None,
             'message': '도서관 계정을 연결해 주세요.' if not client else '좌석 현황을 확인하고 있습니다.',
@@ -340,7 +341,8 @@ class SeatService:
         with self.lock:
             self.store.save(self.state['targets'], self.state['running'], self.state['repeat'],
                             self.state['repeatControl'], self.state['autoRenew'], self.state['renewNightUntil'],
-                            {'scheduledBooking': self.state['scheduledBooking'], 'notifications': self.state['notifications']})
+                            {'scheduledBooking': self.state['scheduledBooking'], 'notifications': self.state['notifications'],
+                             'autoRenewDisabledId': self.state['autoRenewDisabledId']})
 
     def _failure(self, error):
         self._notify('failure', getattr(error, 'notification_title', '좌석 작업에 실패했습니다'), str(error))
@@ -526,6 +528,7 @@ class SeatService:
                 self._check_repeat(reservation, allow_repeat=allow_repeat)
                 reservation = self.snapshot()['reservation']
                 self._auto_repeat(reservation)
+                self._default_auto_renew(reservation)
                 self._check_auto_renew(reservation, allow_run=allow_repeat)
                 current = self.snapshot()
                 if reservation_only and not current['running']:
@@ -876,7 +879,11 @@ class SeatService:
             raise LibraryError('자동 연장 설정과 내 좌석을 확인해 주세요.')
         with self.operation:
             if not enabled:
-                self._update(autoRenew=None)
+                state = self.snapshot()
+                if ((state['reservation'] and state['reservation']['id'] != expected_id)
+                        or (state['autoRenew'] and state['autoRenew']['reservationId'] != expected_id)):
+                    raise LibraryError('내 좌석이 변경되었습니다. 다시 확인해 주세요.')
+                self._update(autoRenew=None, autoRenewDisabledId=expected_id)
             else:
                 if not self.client:
                     raise LibraryError('도서관 계정을 먼저 연결해 주세요.')
@@ -884,10 +891,27 @@ class SeatService:
                 self._update(reservation=current, reservationFresh=True)
                 self._renewal_source(current, expected_id)
                 plan = self._renewal_plan(current)
-                self._update(autoRenew=plan, error=None, nextCheck=time.time())
+                self._update(autoRenew=plan, autoRenewDisabledId=None, error=None, nextCheck=time.time())
             self._save()
             self._event('자동 연장을 켰습니다.' if enabled else '자동 연장을 껐습니다. 현재 좌석은 유지됩니다.')
             self.wake.set()
+
+    def _default_auto_renew(self, current):
+        """Arm verified confirmed bookings, preserving opt-outs and unfinished writes."""
+        if not current or current['state'] not in {'CHARGE', 'IN_USE'}:
+            return
+        state = self.snapshot()
+        plan = state['autoRenew']
+        if plan and (plan['reservationId'] == current['id'] or plan['status'] == 'working'):
+            return
+        if state['autoRenewDisabledId'] == current['id']:
+            return
+        try:
+            plan = self._renewal_plan(current)
+        except LibraryError:
+            return
+        self._update(autoRenew=plan)
+        self._save()
 
     def _check_auto_renew(self, current, *, allow_run):
         plan = self.snapshot()['autoRenew']
@@ -1107,6 +1131,7 @@ class SeatService:
                 if not is_confirmed(verified):
                     raise LibraryError('아직 배정확정이 확인되지 않았습니다. 자동 재예약과 대기는 중지되었습니다. 새로고침 후 공식 앱에서도 확인해 주세요.')
                 self._update(reservation=verified, reservationFresh=True, error=None)
+                self._default_auto_renew(verified)
                 self._event('배정이 확정되었습니다. 자동 재예약과 갈아타기 대기를 종료했습니다.')
                 if current['state'] == 'TEMP_CHARGE':
                     self._seat_notification('배정확정에 성공했습니다')

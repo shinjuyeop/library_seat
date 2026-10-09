@@ -127,6 +127,7 @@ def main():
             assert visible('#reservation-badge').text == '배정 확정'
             assert not driver.find_elements(By.ID, 'repeat-toggle')
             assert not service.snapshot()['running'] and not service.snapshot()['repeat']
+            assert visible('#auto-renew-toggle').get_attribute('aria-checked') == 'true'
             screenshot('ios-my-seat')
 
             tab('find')
@@ -202,6 +203,8 @@ def main():
             assert visible('#release').text == '좌석 반납'
             screenshot('ios-confirmed')
             # Renew the demo seat, then exercise quota exhaustion under an open-hours clock.
+            click('#auto-renew-toggle')
+            wait.until(lambda d: visible('#auto-renew-toggle').get_attribute('aria-checked') == 'false')
             with service.operation:
                 client.current.update(endTime=datetime.fromtimestamp(time.time() + 7100, KST).strftime('%Y-%m-%d %H:%M:%S'),
                                       renewableAt=time.time() - 100)

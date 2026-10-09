@@ -109,7 +109,10 @@ beforeEach(() => {
         roomName: '2열람실',
         state: 'CHARGE',
         remainingTime: 10,
+        roomId: 232,
+        endTime: new Date(Date.now() + 10800000).toISOString(),
       };
+      data.autoRenew = { reservationId: 'reservation-1', status: 'scheduled', dueAt: Date.now() / 1000 + 3660 };
       data.running = false;
       data.targets = [];
       data.repeat = null;
@@ -364,6 +367,7 @@ describe('React app with the existing account API', () => {
     expect(document.getElementById('toast').textContent).toBe('배정 확정 완료 · 2열람실 3번');
     await waitFor(() => expect(document.activeElement.id).toBe('reservation'));
     expect(screen.queryByRole('switch', { name: '임시배정 자동 재예약' })).toBeNull();
+    expect(screen.getByRole('switch', { name: '자동 연장' }).getAttribute('aria-checked')).toBe('true');
     expect(writes('wait')).toHaveLength(0);
     fireEvent.click(screen.getByRole('button', { name: '좌석 찾기', exact: true }));
     expect(screen.getByRole('button', { name: '내 좌석 보기' }).textContent).toContain('배정 확정');

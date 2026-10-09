@@ -29,6 +29,8 @@ class ImmediateBookingTests(ServiceFixture):
                 self.assertEqual(int(state['reservation']['roomId']), room)
                 self.assertIsNone(state['repeat'])
                 self.assertFalse(state['running'])
+                self.assertEqual(state['autoRenew']['reservationId'], state['reservation']['id'])
+                self.assertEqual(state['autoRenew']['status'], 'scheduled')
                 self.client.check_arrival.assert_called_once_with(room, TAG)
                 self.client.check_arrival.reset_mock()
                 self.client.current.update(renewableAt=time.time() - 1,

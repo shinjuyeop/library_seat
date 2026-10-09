@@ -87,6 +87,7 @@ class RenewalTests(ServiceFixture):
         self.assertNotIn(TAG, json.dumps(state))
 
     def test_manual_renewal_at_120_minutes_does_not_enable_automation(self):
+        self.service.set_auto_renew(False, '1')
         self.due(minutes=121, enable=False)
         with self.assertRaises(LibraryError):
             self.service.renew('1')
@@ -103,6 +104,42 @@ class RenewalTests(ServiceFixture):
         self.service.tick()
         self.assertEqual(self.calls.mock_calls, [])
         self.assertEqual(self.client.current['id'], '1')
+
+    def test_existing_confirmed_booking_defaults_on_without_a_provider_write(self):
+        state = self.service.snapshot()
+        self.assertEqual(state['autoRenew']['reservationId'], '1')
+        self.assertEqual(state['autoRenew']['dueAt'], NOON + 3660)
+        self.service.tick(allow_repeat=False)
+        self.assertEqual(self.calls.mock_calls, [])
+
+    def test_opt_out_survives_due_reads_and_restart_but_new_booking_defaults_on(self):
+        self.service.set_auto_renew(False, '1')
+        self.due(enable=False)
+        self.service.tick()
+        self.restart()
+        self.assertIsNone(self.service.snapshot()['autoRenew'])
+        self.assertEqual(self.store.load()['autoRenewDisabledId'], '1')
+        self.assertEqual(self.calls.mock_calls, [])
+        self.service.reserve('102:6')
+        self.assertEqual(self.service.snapshot()['autoRenew']['reservationId'], '2')
+        self.assertEqual(self.service.snapshot()['autoRenew']['status'], 'scheduled')
+        with self.assertRaises(LibraryError):
+            self.service.set_auto_renew(False, '1')
+        self.assertEqual(self.service.snapshot()['autoRenew']['reservationId'], '2')
+
+    def test_default_requires_supported_confirmed_unexpired_booking(self):
+        self.service._update(autoRenew=None)
+        self.service.nfc_tags = {}
+        self.service.tick()
+        self.assertIsNone(self.service.snapshot()['autoRenew'])
+        self.service.nfc_tags = {102: TAG}
+        self.client.current['state'] = 'TEMP_CHARGE'
+        self.service.tick()
+        self.assertIsNone(self.service.snapshot()['autoRenew'])
+        self.client.current.update(state='CHARGE', endTime=end_at(NOON - 1))
+        self.service.tick()
+        self.assertIsNone(self.service.snapshot()['autoRenew'])
+        self.assertEqual(self.calls.mock_calls, [])
 
     def test_zero_quota_reassigns_and_keeps_automation_on_the_new_booking(self):
         self.due(count=0)
@@ -377,6 +414,7 @@ class RenewalCloudTests(unittest.TestCase):
 
     def test_account_isolation_scheduler_and_server_jobs_after_logout(self):
         alice, bob = self.clouds['alice'], self.clouds['bob']
+        bob.set_auto_renew(False, '1')
         alice.set_auto_renew(True, '1')
         self.assertLessEqual(alice.store.read()['nextPollAt'], NOON + 1)
         self.assertIsNone(bob.snapshot()['autoRenew'])
@@ -390,6 +428,19 @@ class RenewalCloudTests(unittest.TestCase):
         alice.tick()
         self.assertEqual(alice.store.read()['nextPollAt'], NOON + 30)
         self.assertNotIn(TAG, json.dumps(alice.store.read()))
+
+    def test_default_and_opt_out_persist_across_devices_and_login(self):
+        alice, bob = self.clouds['alice'], self.clouds['bob']
+        self.assertEqual(alice.snapshot()['autoRenew']['reservationId'], '1')
+        alice.set_auto_renew(False, '1')
+        self.root.login('alice', 'test-password', remember=True)
+        second_device = self.root.for_account(alice.store.account)
+        second_device.tick()
+        self.assertIsNone(second_device.snapshot()['autoRenew'])
+        self.assertEqual(second_device.snapshot()['autoRenewDisabledId'], '1')
+        self.assertEqual(bob.snapshot()['autoRenew']['reservationId'], '1')
+        self.clients['alice'].renew_reservation.assert_not_called()
+        self.clients['bob'].renew_reservation.assert_not_called()
 
     def test_login_never_performs_due_renewal_and_cloud_lock_serializes_actions(self):
         alice = self.clouds['alice']
