@@ -87,15 +87,13 @@ export default function ReservationCard({
                 : ''}
           </p>
           <div className="reservation-bottom">
-            <p className="fine">
+            {!confirmed && <p className="fine">
               {temporary
                 ? confirmationAvailable
                   ? '도서관에 도착했다면 제한 시간 안에 배정을 확정해 주세요.'
                   : '이 열람실은 현장에서 공식 앱으로 NFC 인증을 진행해 주세요.'
-                : confirmed
-                  ? '배정이 확정된 좌석입니다. 종료 시간에 맞춰 이용해 주세요.'
-                  : '공식 앱에서 배정 상태를 확인해 주세요.'}
-            </p>
+                : '공식 앱에서 배정 상태를 확인해 주세요.'}
+            </p>}
             {temporary && confirmationAvailable && <button id="confirm-allocation" className="primary"
               disabled={!canAct || !reservationFresh} onClick={() => onConfirm(reservation)}>
               배정 확정
