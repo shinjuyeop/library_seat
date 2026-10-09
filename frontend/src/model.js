@@ -107,13 +107,26 @@ export function libraryReducer(state, action) {
   }
 }
 
-export function filterSeats(seats, { view, room, query, freeOnly, selected }) {
+export const shortSeatLabel = seat => `${({ 102: '1A', 101: '1B', 232: '2', 233: '3A', 234: '3B', 107: '5' })[seat.roomId] || seat.roomName} · ${seat.number}번`;
+
+export function favoriteSeats(data) {
+  const catalog = new Map(data.seats.map(seat => [seat.key, seat]));
+  return (data.favorites || []).map(key => {
+    if (catalog.has(key)) return catalog.get(key);
+    const [roomId, number] = key.split(':');
+    const room = data.rooms.find(room => String(room.id) === roomId);
+    return room ? { key, roomId: room.id, roomName: room.name, number, occupied: null } : null;
+  }).filter(Boolean);
+}
+
+export function filterSeats(seats, { view, room, query, freeOnly, selected, favorites = [] }) {
   const compact = (value) =>
     value.toLowerCase().replace(/열람실|좌석|제|번|[\s()\-]/g, '');
   const search = compact(query.trim());
   const result = seats.filter(
     (seat) =>
       (view !== 'single' || seat.single) &&
+      (view !== 'favorites' || favorites.includes(seat.key)) &&
       (view !== 'selected' || selected.includes(seat.key)) &&
       (room === 'all' || String(seat.roomId) === room) &&
       (!freeOnly || seat.occupied === false) &&
@@ -122,7 +135,9 @@ export function filterSeats(seats, { view, room, query, freeOnly, selected }) {
           ? seat.number.startsWith(search)
           : compact(seat.roomName + seat.number).includes(search))),
   );
-  if (view === 'selected')
+  if (view === 'favorites')
+    result.sort((a, b) => favorites.indexOf(a.key) - favorites.indexOf(b.key));
+  else if (view === 'selected')
     result.sort((a, b) => selected.indexOf(a.key) - selected.indexOf(b.key));
   else if (/^\d+$/.test(search))
     result.sort(

@@ -94,6 +94,31 @@ def main():
             no_overflow()
             assert driver.execute_script('return getComputedStyle(document.querySelector("#seat-search")).fontSize') == '16px'
             screenshot('ios-find')
+            # Favorites are preferences only; booking and waiting remain explicit actions.
+            click('.seat-cell[aria-label^="1열람실 A 3번 "]')
+            click('#favorite-toggle')
+            wait.until(lambda d: service.snapshot()['favorites'] == ['102:3'])
+            assert visible('#favorite-toggle').get_attribute('aria-pressed') == 'true'
+            click('button[aria-label="좌석 상세 닫기"]')
+            click('.seat-cell[aria-label^="1열람실 B 21번 "]')
+            click('#favorite-toggle')
+            wait.until(lambda d: service.snapshot()['favorites'] == ['102:3', '101:21'])
+            click('button[aria-label="좌석 상세 닫기"]')
+            click('[data-view="favorites"]')
+            assert len(driver.find_elements(By.CSS_SELECTOR, '.seat-cell')) == 2
+            for width in (320, 390):
+                mobile(width)
+                no_overflow()
+                assert driver.execute_script('return [...document.querySelectorAll(".view-tabs button")].every(b => b.scrollWidth <= b.clientWidth)'), 'seat tabs overflow'
+                screenshot(f'ios-favorites-{width}')
+            assert service.snapshot()['reservation'] is None and not service.snapshot()['running']
+            tab('settings')
+            assert len(driver.find_elements(By.CSS_SELECTOR, '.favorite-list li')) == 2
+            click('button[aria-label="1열람실 B 21번 선호좌석 등록 취소"]')
+            wait.until(lambda d: service.snapshot()['favorites'] == ['102:3'])
+            click('.favorites-card .text-button')
+            assert driver.find_element(By.CSS_SELECTOR, '[data-view="favorites"]').get_attribute('aria-pressed') == 'true'
+            click('[data-view="single"]')
             # Room overview, scoped search and native history keep selection context.
             click('[data-view="all"]')
             visible('#room-overview')
@@ -330,7 +355,8 @@ def main():
             with patch('seat_service.schedule_window', return_value=schedule_window(fixed_evening)):
                 driver.refresh()
                 tab('schedule')
-                Select(visible('select[aria-label="시간 예약 열람실"]')).select_by_value('102')
+                Select(visible('select[aria-label="시간 예약 열람실"]')).select_by_value('favorites')
+                assert '1A · 3번' in visible('select[aria-label="시간 예약 좌석 번호"]').text
                 Select(visible('select[aria-label="시간 예약 좌석 번호"]')).select_by_value('102:3')
                 Select(visible('select[aria-label="예약 시간"]')).select_by_value('06:20')
                 for width in (320, 390):

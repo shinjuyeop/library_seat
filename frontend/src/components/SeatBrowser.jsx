@@ -1,5 +1,5 @@
 import { memo, useMemo, useRef } from 'react';
-import { filterSeats, seatStatus, timeLabel } from '../model';
+import { favoriteSeats, filterSeats, seatStatus, timeLabel } from '../model';
 import Icon from './Icon';
 import RoomOverview from './RoomOverview';
 
@@ -24,8 +24,9 @@ export default function SeatBrowser({ data, selected, canAct, busy, filters, set
   const overview = view === 'all' && room === 'all' && !query.trim();
   const roomDetail = view === 'all' && room !== 'all';
   const roomName = data.rooms.find(item => String(item.id) === room)?.name;
-  const seats = useMemo(() => filterSeats(data.seats, { view, room, query, freeOnly, selected }),
-    [data.seats, view, room, query, freeOnly, selected]);
+  const seats = useMemo(() => filterSeats(view === 'favorites' ? favoriteSeats(data) : data.seats,
+    { view, room, query, freeOnly, selected, favorites: data.favorites }),
+    [data.seats, data.favorites, data.rooms, view, room, query, freeOnly, selected]);
   const visible = seats.slice(0, limit);
   const selectedOrder = new Map(selected.map((key, index) => [key, index + 1]));
   const groups = new Map(), totals = new Map();
@@ -48,12 +49,12 @@ export default function SeatBrowser({ data, selected, canAct, busy, filters, set
         aria-label="좌석 번호" autoComplete="off" autoCapitalize="none"
         spellCheck={false} enterKeyHint="search" value={query}
         onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur(); }}
-        onChange={event => change({ query: event.target.value, view: event.target.value.trim() ? 'all' : view })} />
+        onChange={event => change({ query: event.target.value, view: view === 'favorites' ? view : event.target.value.trim() ? 'all' : view })} />
       {query && <button id="clear-search" className="icon-button" aria-label="검색어 지우기"
         onClick={() => { change({ query: '' }); searchRef.current?.focus(); }}><Icon name="close" /></button>}
     </div>
     <div className="view-tabs" role="group" aria-label="좌석 목록">
-      {[['single', '1인석'], ['all', '전체 좌석'], ['selected', data.running ? '대기 중' : '선택한 좌석']].map(([key, label]) =>
+      {[['favorites', '선호좌석'], ['single', '1인석'], ['all', '전체 좌석'], ['selected', data.running ? '대기 중' : '선택한 좌석']].map(([key, label]) =>
         <button key={key} data-view={key} aria-pressed={view === key} className={view === key ? 'active' : ''}
           onClick={() => change({ view: key, query: '', room: 'all', freeOnly: false })}>
           {label}{key === 'selected' && <> <span id="selected-tab-count">{selected.length}</span></>}
@@ -99,8 +100,8 @@ export default function SeatBrowser({ data, selected, canAct, busy, filters, set
         <div className="number-grid">{items.map(seatButton)}</div>
       </section>)}</div>}
     {seats.length === 0 && <div id="empty-seats" className="empty"><Icon name="search" />
-      <strong>{view === 'selected' ? '선택한 좌석이 없습니다' : '조건에 맞는 좌석이 없습니다'}</strong>
-      <p>{view === 'selected' ? '여러 좌석 선택을 눌러 기다릴 자리를 골라보세요.' : view === 'single'
+      <strong>{view === 'favorites' && !data.favorites?.length ? '등록한 선호좌석이 없습니다' : view === 'selected' ? '선택한 좌석이 없습니다' : '조건에 맞는 좌석이 없습니다'}</strong>
+      <p>{view === 'favorites' && !data.favorites?.length ? '좌석을 눌러 상세창에서 선호좌석을 등록해 보세요.' : view === 'selected' ? '여러 좌석 선택을 눌러 기다릴 자리를 골라보세요.' : view === 'single'
         ? '1인석은 1열람실 A·B에서 찾을 수 있어요.' : '검색어나 열람실, 빈자리 필터를 바꿔보세요.'}</p>
       <button className="secondary" onClick={reset}>전체 좌석 보기</button>
     </div>}

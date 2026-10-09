@@ -22,6 +22,7 @@ BASE = 'https://library.konkuk.ac.kr'
 ROOMS = {102: '1열람실 A', 101: '1열람실 B', 232: '2열람실',
          233: '3열람실 A', 234: '3열람실 B', 107: '5열람실'}
 MAX_TARGETS = 50
+MAX_FAVORITES = 100
 ACTIVE_STATES = {'TEMP_CHARGE', 'CHARGE', 'IN_USE'}
 AUTO_RENEW_REMAINING = 119 * 60
 KST = timezone(timedelta(hours=9))
@@ -97,6 +98,8 @@ def sanitize_seat_catalog(state):
     state['seats'] = [seat for seat in state.get('seats', []) if valid_seat_key(seat.get('key'))]
     state['targets'] = [key for key in state.get('targets', []) if valid_seat_key(key)]
     state['running'] = bool(state.get('running') and state['targets'])
+    favorites = state.get('favorites', [])
+    state['favorites'] = list(dict.fromkeys(key for key in favorites if valid_seat_key(key)))[:MAX_FAVORITES] if isinstance(favorites, list) else []
     # Retire persisted temporary-seat loops, including cloud documents from older versions.
     state['repeat'] = None
     state['repeatControl'] = {'observedId': None, 'paused': True}
@@ -275,6 +278,7 @@ class SeatService:
             'connected': client is not None, 'connecting': False,
             'running': bool(saved['running']),
             'targets': [key for key in saved['targets'] if valid_seat_key(key)][:MAX_TARGETS],
+            'favorites': saved.get('favorites', []),
             'rooms': [{'id': room, 'name': name} for room, name in ROOMS.items()],
             'seats': [], 'reservation': None, 'reservationFresh': False,
             'catalogVersion': 0,
@@ -339,7 +343,7 @@ class SeatService:
             self.store.save(self.state['targets'], self.state['running'], self.state['repeat'],
                             self.state['repeatControl'], self.state['autoRenew'], self.state['renewNightUntil'],
                             {'scheduledBooking': self.state['scheduledBooking'], 'notifications': self.state['notifications'],
-                             'autoRenewDisabledId': self.state['autoRenewDisabledId']})
+                             'autoRenewDisabledId': self.state['autoRenewDisabledId'], 'favorites': self.state['favorites']})
 
     def _failure(self, error):
         self._notify('failure', getattr(error, 'notification_title', '좌석 작업에 실패했습니다'), str(error))
@@ -403,6 +407,23 @@ class SeatService:
                          seats=[], lastChecked=None, nextCheck=None, error=None, repeat=None, autoRenew=None)
             self._save()
             self._event('도서관 연결과 자동 예약을 종료했습니다.')
+
+    def update_favorite(self, key, enabled):
+        if not valid_seat_key(key) or type(enabled) is not bool:
+            raise LibraryError('선호좌석과 등록 상태를 확인해 주세요.')
+        with self.operation:
+            state = self.snapshot()
+            favorites = state['favorites']
+            if enabled and key not in favorites:
+                if len(favorites) >= MAX_FAVORITES:
+                    raise LibraryError('선호좌석은 최대 100개까지 등록할 수 있습니다.')
+                if not any(seat['key'] == key and seat.get('id') for seat in state['seats']):
+                    raise LibraryError('좌석 정보를 확인하지 못했습니다. 새로고침 후 다시 등록해 주세요.')
+                favorites.append(key)
+            elif not enabled:
+                favorites = [item for item in favorites if item != key]
+            self._update(favorites=favorites)
+            self._save()
 
     def set_wait(self, targets, running):
         if not isinstance(targets, list) or len(targets) > MAX_TARGETS or any(not valid_seat_key(key) for key in targets):

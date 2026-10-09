@@ -6,7 +6,7 @@ const historyKey = 'librarySeatBrowse';
 
 function savedFilters(state) {
   const filters = state?.[historyKey];
-  if (!filters || !['single', 'all', 'selected'].includes(filters.view) ||
+  if (!filters || !['favorites', 'single', 'all', 'selected'].includes(filters.view) ||
     !['all', '102', '101', '232', '233', '234', '107'].includes(filters.room)) return null;
   return { ...defaultFilters, view: filters.view, room: filters.room,
     query: typeof filters.query === 'string' ? filters.query : '',

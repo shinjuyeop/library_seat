@@ -267,6 +267,9 @@ class CloudService:
     def update_wait(self, key, enabled):
         self._execute(lambda worker: worker.update_wait(key, enabled))
 
+    def update_favorite(self, key, enabled):
+        self._execute(lambda worker: worker.update_favorite(key, enabled))
+
     def reserve(self, key):
         self._execute(lambda worker: worker.reserve(key))
 

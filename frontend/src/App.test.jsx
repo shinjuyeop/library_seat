@@ -37,6 +37,7 @@ const initialData = () => ({
   connecting: false,
   running: false,
   targets: [],
+  favorites: [],
   reservation: null,
   reservationFresh: true,
   repeat: null,
@@ -92,6 +93,9 @@ beforeEach(() => {
         return response({ error: '비밀번호를 다시 입력해 주세요.' }, 422);
       signedIn = true;
       return response({ csrf: 'new-csrf' });
+    }
+    if (path === 'favorites/seat') {
+      data.favorites = body.enabled ? [...new Set([...data.favorites, body.key])] : data.favorites.filter(key => key !== body.key);
     }
     if (path === 'wait') {
       data.running = body.running;
@@ -177,6 +181,72 @@ const writes = (path) =>
   );
 
 describe('React app with the existing account API', () => {
+  it('registers from details, filters favorites, and removes from settings without creating a booking', async () => {
+    await openApp(); allSeats();
+    fireEvent.click(seat('2열람실 3번 빈자리 상세 보기'));
+    fireEvent.click(screen.getByRole('button', { name: '선호좌석 등록', exact: true }));
+    await screen.findByRole('button', { name: '선호좌석 등록 취소', exact: true });
+    expect(writes('favorites/seat')[0].body).toEqual({ key: '232:3', enabled: true });
+    expect(writes('favorites/seat')[0].options.headers['X-CSRF-Token']).toBe('test-csrf');
+    expect(screen.getByRole('dialog').id).toBe('seat-sheet');
+    fireEvent.click(screen.getByRole('button', { name: '좌석 상세 닫기' }));
+    fireEvent.click(screen.getByRole('button', { name: '선호좌석', exact: true }));
+    expect(document.querySelectorAll('.seat-cell')).toHaveLength(1);
+    expect(seat('2열람실 3번 빈자리 상세 보기')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: '설정', exact: true }));
+    expect(document.querySelector('.favorite-list').textContent).toContain('2열람실 · 3번');
+    fireEvent.click(screen.getByRole('button', { name: '2열람실 3번 선호좌석 등록 취소' }));
+    await waitFor(() => expect(data.favorites).toEqual([]));
+    fireEvent.click(screen.getByRole('button', { name: '좌석 찾기에서 보기' }));
+    expect(screen.getByText('등록한 선호좌석이 없습니다')).toBeTruthy();
+    expect(writes('reserve')).toHaveLength(0);
+    expect(writes('wait')).toHaveLength(0);
+  });
+
+  it('keeps favorite searches inside the favorite view and preserves a running wait', async () => {
+    data.favorites = ['102:3', '232:31']; data.running = true; data.targets = ['107:1'];
+    await openApp();
+    fireEvent.click(screen.getByRole('button', { name: '선호좌석', exact: true }));
+    fireEvent.change(screen.getByRole('searchbox'), { target: { value: '3' } });
+    expect(document.querySelectorAll('.seat-cell')).toHaveLength(2);
+    expect(document.querySelector('[data-view="favorites"]').getAttribute('aria-pressed')).toBe('true');
+    fireEvent.click(seat('2열람실 31번 1분 상세 보기'));
+    fireEvent.click(screen.getByRole('button', { name: '선호좌석 등록 취소', exact: true }));
+    await waitFor(() => expect(data.favorites).toEqual(['102:3']));
+    expect(data.targets).toEqual(['107:1']);
+    expect(data.running).toBe(true);
+    expect(writes('wait/seat')).toHaveLength(0);
+  });
+
+  it('uses room-qualified favorite labels for scheduled bookings across rooms', async () => {
+    data.favorites = ['232:31', '102:3']; data.confirmationRooms = [102, 232];
+    await openApp();
+    fireEvent.click(screen.getByRole('button', { name: '시간 예약', exact: true }));
+    fireEvent.change(screen.getByRole('combobox', { name: '시간 예약 열람실' }), { target: { value: 'favorites' } });
+    const select = screen.getByRole('combobox', { name: '시간 예약 좌석 번호' });
+    expect([...select.options].map(option => option.textContent)).toEqual(['선택', '2 · 31번', '1A · 3번']);
+    fireEvent.change(select, { target: { value: '232:31' } });
+    fireEvent.click(screen.getByRole('button', { name: '시간 예약 등록' }));
+    await screen.findByRole('button', { name: '시간 예약 취소' });
+    expect(writes('schedule')[0].body.key).toBe('232:31');
+    fireEvent.click(screen.getByRole('button', { name: '설정', exact: true }));
+    fireEvent.click(screen.getByRole('button', { name: '2열람실 31번 선호좌석 등록 취소' }));
+    await waitFor(() => expect(data.favorites).toEqual(['102:3']));
+    expect(data.scheduledBooking.key).toBe('232:31');
+    expect(writes('schedule/cancel')).toHaveLength(0);
+  });
+
+  it('lets a missing cached favorite be removed while booking remains unavailable', async () => {
+    data.favorites = ['102:3']; data.seats = []; data.connected = false;
+    await openApp();
+    fireEvent.click(screen.getByRole('button', { name: '선호좌석', exact: true }));
+    fireEvent.click(seat('1열람실 A 3번 확인 필요 상세 보기'));
+    expect(screen.getByRole('button', { name: '이 좌석 대기 시작' }).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: '선호좌석 등록 취소', exact: true }));
+    await waitFor(() => expect(data.favorites).toEqual([]));
+    expect(writes('reserve')).toHaveLength(0);
+  });
+
   it('registers and cancels a future occupied seat without booking immediately', async () => {
     await openApp();
     fireEvent.click(screen.getByRole('button', { name: '시간 예약', exact: true }));
@@ -184,7 +254,7 @@ describe('React app with the existing account API', () => {
     expect(times.options).toHaveLength(42);
     expect(times.options[0].value).toBe('05:00');
     expect(times.options[41].value).toBe('11:50');
-    expect(screen.getByRole('combobox', { name: '시간 예약 열람실' }).options).toHaveLength(1);
+    expect(screen.getByRole('combobox', { name: '시간 예약 열람실' }).options).toHaveLength(2);
     fireEvent.change(times, { target: { value: '06:20' } });
     fireEvent.change(screen.getByRole('combobox', { name: '시간 예약 좌석 번호' }), { target: { value: '102:1' } });
     fireEvent.click(screen.getByRole('button', { name: '시간 예약 등록' }));

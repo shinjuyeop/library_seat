@@ -205,6 +205,14 @@ def create_app(service, password=None, *, secret=None, secure_cookie=True):
         account_service().update_wait(body.get('key'), body.get('enabled'))
         return jsonify(ok=True)
 
+    @app.post('/api/favorites/seat')
+    def update_favorite():
+        body = request.get_json()
+        if not isinstance(body, dict):
+            return jsonify(error='선호좌석을 선택해 주세요.'), 400
+        account_service().update_favorite(body.get('key'), body.get('enabled'))
+        return jsonify(ok=True)
+
     @app.post('/api/reserve')
     def reserve():
         body = request.get_json()

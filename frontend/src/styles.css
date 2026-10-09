@@ -76,7 +76,7 @@ label { display: block; font-size: 14px; font-weight: 550; margin: 20px 0 8px; }
 .search-box input { min-width: 0; border: 0; background: transparent; padding: 12px 0; min-height: 50px; font-size: 16px; outline-offset: -2px; }
 .search-box input::placeholder { color: #737b76; }
 .search-box input::-webkit-search-cancel-button { display: none; }
-.view-tabs { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 3px; background: #e9ece9; border-radius: 12px; padding: 4px; margin-bottom: 16px; }
+.view-tabs { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,.8fr) minmax(0,1.15fr) minmax(0,1.5fr); gap: 3px; background: #e9ece9; border-radius: 12px; padding: 4px; margin-bottom: 16px; }
 .view-tabs button { background: none; border: 0; border-radius: 9px; color: #626d65; padding: 8px 3px; min-height: 44px; font-size: 13px; white-space: nowrap; }
 .view-tabs button.active { background: white; color: #253d2e; font-weight: 650; box-shadow: 0 1px 4px #20312613; }
 .view-tabs button span { font-size: 11px; margin-left: 2px; }
@@ -230,6 +230,13 @@ dialog > p { font-size: 14px; line-height: 1.8; margin: 16px 0 26px; white-space
 .sheet-description { margin: 22px 0 10px; font-size: 15px; line-height: 1.75; color: #5c6860; }
 .sheet-actions { display: grid; gap: 10px; margin-top: 24px; }
 .sheet-actions .primary { min-height: 52px; }
+.favorite-toggle { display: flex; align-items: center; justify-content: center; gap: 8px; }
+.favorite-toggle svg { width: 18px; height: 18px; }
+.favorite-toggle[aria-pressed=true] { color: var(--green); }
+.favorite-toggle[aria-pressed=true] svg { fill: currentColor; }
+.favorite-list { list-style: none; padding: 0; margin: 12px 0 0; }
+.favorite-list li { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 52px; font-size: 14px; }
+.favorite-list li + li { border-top: 1px solid var(--line); }
 body:has(dialog[open]) { overflow: hidden; }
 .bottom-sheet[open] { animation: sheet-enter .2s ease-out; }
 @keyframes sheet-enter { from { transform: translateY(24px); opacity: .4; } to { transform: translateY(0); opacity: 1; } }
@@ -262,6 +269,7 @@ body:has(dialog[open]) { overflow: hidden; }
 }
 @media (max-width:700px) { .number-grid { grid-template-columns: repeat(6,minmax(0,1fr)); gap: 7px; } }
 @media (max-width:370px) {
+  .view-tabs button { font-size: 12px; }
   .page { padding-inline: 18px; }
   h1 { font-size: 31px; }
   .page-heading h1 { font-size: 26px; }

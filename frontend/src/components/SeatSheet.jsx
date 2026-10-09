@@ -2,11 +2,12 @@ import { useEffect, useRef } from 'react';
 import { seatStatus, timeLabel } from '../model';
 import Icon from './Icon';
 
-export default function SeatSheet({ seat, data, selected, canAct, onClose, onReserve, onWait, onUpdateWait, onSelect, onReservation, onSchedule }) {
+export default function SeatSheet({ seat, data, selected, canAct, canFavorite, onFavorite, onClose, onReserve, onWait, onUpdateWait, onSelect, onReservation, onSchedule }) {
   const dialog = useRef(null);
   useEffect(() => { dialog.current?.showModal(); }, []);
   const status = seatStatus(seat);
   const own = data.reservation?.roomName === seat.roomName && data.reservation?.seatNo === seat.number;
+  const favorite = data.favorites?.includes(seat.key);
   const waiting = data.running && data.targets.includes(seat.key);
   const full = data.running && !waiting && data.targets.length >= 50;
   const blocked = !canAct || (!status.free && full) || seat.occupied == null || (data.reservation &&
@@ -40,6 +41,8 @@ export default function SeatSheet({ seat, data, selected, canAct, onClose, onRes
             {selected.includes(seat.key) ? '선택에서 빼기' : '여러 좌석 선택에 추가'}
           </button>
         </>}
+        <button id="favorite-toggle" className="secondary wide favorite-toggle" aria-pressed={!!favorite} disabled={!canFavorite}
+          onClick={() => onFavorite(seat.key, !favorite)}><Icon name="star" />{favorite ? '선호좌석 등록 취소' : '선호좌석 등록'}</button>
         {onSchedule && data.confirmationRooms?.includes(seat.roomId) && <button className="text-button" disabled={!canAct}
           onClick={() => act(() => onSchedule(seat))}>시간 예약에 선택</button>}
       </div>
