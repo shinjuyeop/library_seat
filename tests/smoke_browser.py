@@ -349,6 +349,9 @@ def main():
 
             # Register/cancel through the real UI, then execute the persisted demo job
             # with only the service clock advanced. No provider requests are made.
+            # Stop the background clock so past fixture dates cannot run the job
+            # before the UI cancellation or between the controlled manual ticks.
+            service.stop()
             tab('schedule')
             fixed_evening = datetime(2026, 10, 9, 20, tzinfo=KST).timestamp()
             fixed_morning = datetime(2026, 10, 10, 5, tzinfo=KST).timestamp()

@@ -1,5 +1,6 @@
 const CACHE = 'library-shell-react-__BUILD_VERSION__';
 const ASSETS = ['/', ..."__BUILD_ASSETS__", '/assets/icon.svg?v=5', '/assets/manifest.webmanifest', '/assets/apple-touch-icon.png?v=5', '/assets/icon-192.png?v=5', '/assets/icon-512.png?v=5', '/assets/favicon-32.png?v=5'];
+const IMMUTABLE_ASSETS = new Set("__BUILD_ASSETS__");
 const notificationTab = value => {
   try {
     const url = new URL(value || '/', self.location.origin);
@@ -36,6 +37,18 @@ self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
   // Credentials, account responses and all writes always go to the server.
   if (event.request.method !== 'GET' || url.origin !== self.location.origin || !ASSETS.includes(url.pathname + url.search)) return;
+  // Content-hashed JS/CSS cannot change at the same URL; avoid a network round trip.
+  // HTML stays network-first so a new deployment can load its new asset URLs.
+  if (IMMUTABLE_ASSETS.has(url.pathname + url.search)) {
+    event.respondWith(caches.open(CACHE).then(async cache => {
+      const cached = await cache.match(event.request);
+      if (cached) return cached;
+      const response = await fetch(event.request);
+      if (response.ok) await cache.put(event.request, response.clone());
+      return response;
+    }));
+    return;
+  }
   event.respondWith(fetch(event.request).then(response => {
     if (response.ok) { const copy = response.clone(); event.waitUntil(caches.open(CACHE).then(cache => cache.put(event.request, copy))); }
     return response;

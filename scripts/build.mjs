@@ -29,5 +29,5 @@ await writeFile(
   'public/sw.js',
   template
     .replace('__BUILD_VERSION__', version)
-    .replace('"__BUILD_ASSETS__"', JSON.stringify(assets)),
+    .replaceAll('"__BUILD_ASSETS__"', JSON.stringify(assets)),
 );

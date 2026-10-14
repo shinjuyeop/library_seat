@@ -21,6 +21,22 @@ export const libraryTimestamp = value => {
   return Number.isFinite(milliseconds) ? milliseconds / 1000 : null;
 };
 
+// JSON polling creates new objects even when the catalog has not changed.
+// Preserve those references so filtering and memoized seat buttons can be reused.
+function shareArray(previous, next, records = false) {
+  if (!previous || !next) return next;
+  const shared = next.map((item, index) => {
+    const old = previous[index];
+    if (Object.is(old, item)) return old;
+    if (records && old && item) {
+      const keys = Object.keys(item);
+      if (keys.length === Object.keys(old).length && keys.every(key => Object.is(old[key], item[key]))) return old;
+    }
+    return item;
+  });
+  return previous.length === shared.length && shared.every((item, index) => item === previous[index]) ? previous : shared;
+}
+
 export function libraryReducer(state, action) {
   switch (action.type) {
     case 'session':
@@ -37,8 +53,14 @@ export function libraryReducer(state, action) {
             }),
       };
     case 'snapshot': {
-      const reservation = action.data.reservation;
-      const verified = action.data.reservationFresh && reservation &&
+      const data = { ...action.data,
+        seats: shareArray(state.data?.seats, action.data.seats, true),
+        rooms: shareArray(state.data?.rooms, action.data.rooms, true),
+        targets: shareArray(state.data?.targets, action.data.targets),
+        favorites: shareArray(state.data?.favorites, action.data.favorites),
+      };
+      const reservation = data.reservation;
+      const verified = data.reservationFresh && reservation &&
         ['TEMP_CHARGE', 'CHARGE', 'IN_USE'].includes(reservation.state);
       const previous = state.observedReservation;
       const changed = verified && state.data &&
@@ -54,24 +76,24 @@ export function libraryReducer(state, action) {
         ['CHARGE', 'IN_USE'].includes(previous?.state) &&
         previous.roomName === reservation.roomName && previous.seatNo === reservation.seatNo;
       const allocationConfirmed = verified && ['CHARGE', 'IN_USE'].includes(reservation.state);
-      const notice = !action.data.error && (changed || confirmed || renewed) ? {
+      const notice = !data.error && (changed || confirmed || renewed) ? {
         id: reservation.id,
         at: Date.now() / 1000,
         message: `${renewed ? '연장 완료' : reassigned ? '재배정·확정 완료' : allocationConfirmed ? '배정 확정 완료' : '배정 완료'} · ${reservation.roomName} ${reservation.seatNo}번`,
       } : null;
       const reset =
         !state.dirty ||
-        action.data.running ||
-        (state.data?.running && !action.data.running);
+        data.running ||
+        (state.data?.running && !data.running);
       return {
         ...state,
-        data: action.data,
+        data,
         reachable: true,
         ...(verified ? {
           observedReservation: { ...reservation },
         } : {}),
         ...(notice ? { reservationNotice: notice, toast: notice.message } : {}),
-        ...(reset ? { selected: action.data.targets, dirty: false } : {}),
+        ...(reset ? { selected: data.targets, dirty: false } : {}),
       };
     }
     case 'toggle': {

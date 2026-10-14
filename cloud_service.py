@@ -4,6 +4,7 @@ import hmac
 import json
 import os
 import re
+import threading
 import time
 import uuid
 
@@ -16,21 +17,26 @@ import push_notifications as push
 
 
 class SupabaseStore:
-    def __init__(self, url, key, account=None):
+    def __init__(self, url, key, account=None, *, transport=None):
         self.base, self.key, self.account = url.rstrip('/'), key, account
         self.url = self.base + '/rest/v1'
         self.headers = {'apikey': key, 'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'}
+        # Account wrappers share connections, but concurrent Flask threads do not
+        # share mutable requests.Session state. Never retry a write implicitly.
+        self._transport = transport if transport is not None else threading.local()
 
     def for_account(self, account):
         if not isinstance(account, str) or not re.fullmatch(r'[a-f0-9]{64}', account):
             raise LibraryError('로그인이 필요합니다.')
-        return SupabaseStore(self.base, self.key, account)
+        return SupabaseStore(self.base, self.key, account, transport=self._transport)
 
     def _request(self, method, path, **kwargs):
         try:
-            response = requests.request(method, self.url + path, headers=self.headers, timeout=10, **kwargs)
-            response.raise_for_status()
-            return response.json()
+            if not hasattr(self._transport, 'session'):
+                self._transport.session = requests.Session()
+            with self._transport.session.request(method, self.url + path, headers=self.headers, timeout=10, **kwargs) as response:
+                response.raise_for_status()
+                return response.json()
         except (requests.RequestException, ValueError):
             raise LibraryError('저장소에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.') from None
 

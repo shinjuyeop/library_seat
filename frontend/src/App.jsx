@@ -108,11 +108,12 @@ export default function App() {
   }, []);
   const confirm = (title, message, execute, action = '확인') => setConfirmation({ title, message, execute, action });
   const toggle = useCallback(key => dispatch({ type: 'toggle', key }), [dispatch]);
-  const updateWait = (key, enabled) => mutate('wait/seat', { key, enabled }, {
+  const updateWait = useCallback((key, enabled) => mutate('wait/seat', { key, enabled }, {
     resetSelection: true,
     message: enabled ? '진행 중인 대기에 추가했습니다.' : '대기에서 제외했습니다.',
-  });
-  const changeSelection = key => data.running ? updateWait(key, !data.targets.includes(key)) : toggle(key);
+  }), [mutate]);
+  const changeSelection = useCallback(key => data?.running ? updateWait(key, !data.targets.includes(key)) : toggle(key),
+    [data?.running, data?.targets, updateWait, toggle]);
   const updateFavorite = (key, enabled) => mutate('favorites/seat', { key, enabled }, {
     message: enabled ? '선호좌석을 등록했습니다.' : '선호좌석 등록을 취소했습니다.',
   });

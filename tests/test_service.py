@@ -493,6 +493,11 @@ class ApiTests(ServiceFixture):
         for path in ('/', *assets, '/assets/manifest.webmanifest', '/sw.js'):
             with self.browser.get(path) as response:
                 self.assertEqual(response.status_code, 200, path)
+                self.assertEqual(response.headers['Cache-Control'],
+                    'public, max-age=31536000, immutable' if path in assets else 'no-cache')
+        with self.browser.get('/assets/missing-12345678.js') as response:
+            self.assertEqual(response.status_code, 404)
+            self.assertEqual(response.headers['Cache-Control'], 'no-cache')
         self.assertEqual(self.browser.post('/api/cron', json={}).status_code, 401)
 
     def test_repeat_requires_login_csrf_and_explicit_boolean(self):

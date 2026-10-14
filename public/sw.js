@@ -1,5 +1,6 @@
-const CACHE = 'library-shell-react-4a07a4631671';
-const ASSETS = ['/', ...["/assets/index-Y7Fw1eDr.js","/assets/index-CTfJdI-_.css"], '/assets/icon.svg?v=5', '/assets/manifest.webmanifest', '/assets/apple-touch-icon.png?v=5', '/assets/icon-192.png?v=5', '/assets/icon-512.png?v=5', '/assets/favicon-32.png?v=5'];
+const CACHE = 'library-shell-react-aca97ccab58d';
+const ASSETS = ['/', ...["/assets/index-BwPrlG1U.js","/assets/index-CTfJdI-_.css"], '/assets/icon.svg?v=5', '/assets/manifest.webmanifest', '/assets/apple-touch-icon.png?v=5', '/assets/icon-192.png?v=5', '/assets/icon-512.png?v=5', '/assets/favicon-32.png?v=5'];
+const IMMUTABLE_ASSETS = new Set(["/assets/index-BwPrlG1U.js","/assets/index-CTfJdI-_.css"]);
 const notificationTab = value => {
   try {
     const url = new URL(value || '/', self.location.origin);
@@ -36,6 +37,18 @@ self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
   // Credentials, account responses and all writes always go to the server.
   if (event.request.method !== 'GET' || url.origin !== self.location.origin || !ASSETS.includes(url.pathname + url.search)) return;
+  // Content-hashed JS/CSS cannot change at the same URL; avoid a network round trip.
+  // HTML stays network-first so a new deployment can load its new asset URLs.
+  if (IMMUTABLE_ASSETS.has(url.pathname + url.search)) {
+    event.respondWith(caches.open(CACHE).then(async cache => {
+      const cached = await cache.match(event.request);
+      if (cached) return cached;
+      const response = await fetch(event.request);
+      if (response.ok) await cache.put(event.request, response.clone());
+      return response;
+    }));
+    return;
+  }
   event.respondWith(fetch(event.request).then(response => {
     if (response.ok) { const copy = response.clone(); event.waitUntil(caches.open(CACHE).then(cache => cache.put(event.request, copy))); }
     return response;

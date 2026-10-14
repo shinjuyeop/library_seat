@@ -5,13 +5,21 @@ import { initialModel, libraryReducer } from './model';
 export function pollDelay(data, now = Date.now() / 1000, settlingUntil = 0) {
   if (!data) return 5000;
   if (now < settlingUntil) return 1000;
-  if (data.scheduledBooking?.status === 'working') return 1000;
-  if (data.scheduledBooking?.status === 'pending') return Math.max(1000, Math.min(5000, (Math.max(data.scheduledBooking.dueAt, data.scheduledBooking.retryAt || 0) - now - 10) * 1000));
-  if (data.running) return data.interval === 1 ? 1000 : 2000;
-  if (data.autoRenew?.status === 'working') return 1000;
-  if (data.autoRenew?.status === 'scheduled')
-    return Math.max(1000, Math.min(5000, (data.autoRenew.dueAt - now - 10) * 1000));
-  return 15000;
+  if (data.scheduledBooking?.status === 'working' || data.autoRenew?.status === 'working') return 1000;
+  let delay = data.running ? (data.interval === 1 ? 1000 : 2000) : 15000;
+  // A distant scheduled job must neither force fast polling nor slow an active wait.
+  const jobs = [
+    data.scheduledBooking?.status === 'pending' && data.scheduledBooking,
+    ['scheduled', 'retry'].includes(data.autoRenew?.status) && data.autoRenew,
+  ];
+  for (const job of jobs) {
+    if (!job) continue;
+    const due = Math.max(job.dueAt, job.retryAt || 0);
+    if (!Number.isFinite(due)) continue;
+    const maximum = due - now > 60 ? 15000 : 5000;
+    delay = Math.min(delay, Math.max(1000, Math.min(maximum, (due - now - 10) * 1000)));
+  }
+  return delay;
 }
 
 export function useLibrary() {
@@ -121,7 +129,7 @@ export function useLibrary() {
       window.removeEventListener('focus', resume);
       window.removeEventListener('offline', offline);
     };
-  }, [refresh, patch, model.pollRevision, model.data?.running, model.data?.interval, model.data?.autoRenew?.dueAt, model.data?.autoRenew?.status, model.data?.scheduledBooking?.dueAt, model.data?.scheduledBooking?.status]);
+  }, [refresh, patch, model.pollRevision, model.data?.running, model.data?.interval, model.data?.autoRenew?.dueAt, model.data?.autoRenew?.retryAt, model.data?.autoRenew?.status, model.data?.scheduledBooking?.dueAt, model.data?.scheduledBooking?.retryAt, model.data?.scheduledBooking?.status]);
 
   useEffect(() => {
     if (!model.toast) return;
@@ -155,7 +163,7 @@ export function useLibrary() {
     }
   };
 
-  const mutate = async (
+  const mutate = useCallback(async (
     path,
     body,
     { resetSelection = false, message = '' } = {},
@@ -194,7 +202,7 @@ export function useLibrary() {
       patch({ busy: false, busyAction: null, pollRevision: revision.current });
       await refresh();
     }
-  };
+  }, [invalidate, loadSession, patch, refresh]);
 
   const reconnect = () => {
     invalidate();

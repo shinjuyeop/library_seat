@@ -79,7 +79,12 @@ def create_app(service, password=None, *, secret=None, secure_cookie=True):
 
     @app.after_request
     def security_headers(response):
-        response.headers['Cache-Control'] = 'no-store' if request.path.startswith('/api/') else 'no-cache'
+        if request.path.startswith('/api/'):
+            response.headers['Cache-Control'] = 'no-store'
+        elif response.status_code == 200 and re.fullmatch(r'/assets/[^/]+-[A-Za-z0-9_-]{8}\.(js|css)', request.path):
+            response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+        else:
+            response.headers['Cache-Control'] = 'no-cache'
         response.headers['X-Content-Type-Options'] = 'nosniff'
         response.headers['Referrer-Policy'] = 'no-referrer'
         response.headers['X-Frame-Options'] = 'DENY'
@@ -311,8 +316,8 @@ def create_app(service, password=None, *, secret=None, secure_cookie=True):
 
     @app.post('/api/refresh')
     def refresh():
-        if throttle('refresh', 1, 10):
-            return jsonify(error='새로고침은 10초마다 가능합니다.'), 429
+        if throttle('refresh', 1, 1):
+            return jsonify(error='새로고침은 1초마다 가능합니다.'), 429
         if getattr(service, 'cloud', False):
             account_service().refresh()
         else:

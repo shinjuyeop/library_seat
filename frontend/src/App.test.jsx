@@ -12,6 +12,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { StrictMode } from 'react';
 import App from './App';
 import { pollDelay, useLibrary } from './useLibrary';
+import * as seatModel from './model';
 
 const rooms = [
   { id: 102, name: '1열람실 A' },
@@ -945,13 +946,54 @@ describe('polling and concurrent user actions', () => {
   it('checks more often while waiting or near an auto-renewal deadline', () => {
     expect(pollDelay({ running: true, interval: 1 }, 100)).toBe(1000);
     expect(pollDelay({ running: true, interval: 30 }, 100)).toBe(2000);
-    expect(pollDelay({ autoRenew: { status: 'scheduled', dueAt: 640 } }, 100)).toBe(5000);
+    expect(pollDelay({ autoRenew: { status: 'scheduled', dueAt: 640 } }, 100)).toBe(15000);
     expect(pollDelay({ autoRenew: { status: 'scheduled', dueAt: 112 } }, 100)).toBe(2000);
     expect(pollDelay({ autoRenew: { status: 'scheduled', dueAt: 110 } }, 100)).toBe(1000);
     expect(pollDelay({ autoRenew: { status: 'scheduled', dueAt: 99 } }, 100)).toBe(1000);
     expect(pollDelay({ running: false, repeat: null }, 100)).toBe(15000);
     expect(pollDelay({ scheduledBooking: { status: 'pending', dueAt: 90, retryAt: 103 } }, 100)).toBe(1000);
     expect(pollDelay({ scheduledBooking: { status: 'pending', dueAt: 120, retryAt: null } }, 100)).toBe(5000);
+  });
+
+  it('uses the most urgent job when a future booking and an active wait coexist', () => {
+    const scheduledBooking = { status: 'pending', dueAt: 10000 };
+    expect(pollDelay({ scheduledBooking }, 100)).toBe(15000);
+    expect(pollDelay({ scheduledBooking, running: true, interval: 1 }, 100)).toBe(1000);
+    expect(pollDelay({ scheduledBooking, running: true, interval: 30 }, 100)).toBe(2000);
+    expect(pollDelay({ scheduledBooking, autoRenew: { status: 'working' } }, 100)).toBe(1000);
+    expect(pollDelay({ scheduledBooking, autoRenew: { status: 'scheduled', dueAt: 112 } }, 100)).toBe(2000);
+    expect(pollDelay({ autoRenew: { status: 'retry', dueAt: 90, retryAt: 1000 } }, 100)).toBe(15000);
+    expect(pollDelay({ scheduledBooking }, 100, 110)).toBe(1000);
+  });
+
+  it('reuses unchanged catalog objects across polls and replaces changed seat data', async () => {
+    const { result } = renderHook(useLibrary);
+    await waitFor(() => expect(result.current.data).not.toBeNull());
+    const previous = result.current.data;
+    const selection = result.current.selected;
+    await act(() => result.current.refresh());
+    for (const field of ['seats', 'rooms', 'favorites', 'targets'])
+      expect(result.current.data[field]).toBe(previous[field]);
+    expect(result.current.selected).toBe(selection);
+    data.seats = data.seats.map((seat, index) => index === 0 ? { ...seat, occupied: false } : seat);
+    await act(() => result.current.refresh());
+    expect(result.current.data.seats).not.toBe(previous.seats);
+    expect(result.current.data.seats[0].occupied).toBe(false);
+    expect(result.current.data.seats[1]).toBe(previous.seats[1]);
+  });
+
+  it('skips unchanged seat renders when a background snapshot arrives', async () => {
+    const status = vi.spyOn(seatModel, 'seatStatus');
+    await openApp();
+    allSeats();
+    expect(status).toHaveBeenCalled();
+    status.mockClear();
+    await act(async () => { fireEvent(window, new Event('focus')); });
+    expect(status).not.toHaveBeenCalled();
+    data.seats = data.seats.map((seat, index) => index === 0 ? { ...seat, occupied: false } : seat);
+    await act(async () => { fireEvent(window, new Event('focus')); });
+    expect(status).toHaveBeenCalled();
+    expect(status.mock.calls.every(([seat]) => seat.key === data.seats[0].key)).toBe(true);
   });
 
   it('keeps unsaved seat selection when background data is refreshed', async () => {
