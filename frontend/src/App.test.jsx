@@ -182,6 +182,23 @@ const writes = (path) =>
   );
 
 describe('React app with the existing account API', () => {
+  it('keeps the essential schedule guidance visible and lets users open the detailed rules', async () => {
+    await openApp();
+    fireEvent.click(screen.getByRole('button', { name: '시간 예약', exact: true }));
+    expect(screen.getByText('앱을 닫아도 예약 시간에 실행해요.')).toBeTruthy();
+    expect(screen.getByText('이용 중인 좌석이 있으면 그대로 유지하고 시간 예약은 종료해요.')).toBeTruthy();
+    const summary = screen.getByText('자세히 보기');
+    const details = summary.closest('details');
+    expect(details.open).toBe(false);
+    fireEvent.click(summary);
+    expect(details.open).toBe(true);
+    expect(within(details).getByText(/05:01까지 3초 간격으로 재시도/)).toBeTruthy();
+    fireEvent.click(summary);
+    expect(details.open).toBe(false);
+    expect(writes('schedule')).toHaveLength(0);
+    expect(writes('reserve')).toHaveLength(0);
+  });
+
   it('registers from details, filters favorites, and removes from settings without creating a booking', async () => {
     await openApp(); allSeats();
     fireEvent.click(seat('2열람실 3번 빈자리 상세 보기'));

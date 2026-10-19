@@ -1,5 +1,6 @@
 import { timeLabel } from '../model';
 import RenewalControls from './RenewalControls';
+import ReservationTime from './ReservationTime';
 
 export default function ReservationCard({
   cardRef,
@@ -50,13 +51,7 @@ export default function ReservationCard({
           <p id="reservation-seat" className="seat-display">
             {reservation.roomName} · {reservation.seatNo}번
           </p>
-          <p id="reservation-time" className="muted">
-            {reservation.endTime
-              ? `종료 ${reservation.endTime}`
-              : reservation.remainingTime != null
-                ? `마지막 조회 기준 ${reservation.remainingTime}분 남음`
-                : ''}
-          </p>
+          <ReservationTime reservation={reservation} fresh={reservationFresh && data.connected && reachable} />
           <RenewalControls data={data} canAct={canAct} busy={busy} reachable={reachable} onRenew={onRenew} onAutoRenew={onAutoRenew} />
           <div className="reservation-bottom">
             {!confirmed && <p className="fine">
