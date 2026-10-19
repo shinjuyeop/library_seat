@@ -1,6 +1,6 @@
-const CACHE = 'library-shell-react-f87310baebeb';
-const ASSETS = ['/', ...["/assets/index-C6y__RP7.js","/assets/index-CK85o-ty.css"], '/assets/icon.svg?v=5', '/assets/manifest.webmanifest', '/assets/apple-touch-icon.png?v=5', '/assets/icon-192.png?v=5', '/assets/icon-512.png?v=5', '/assets/favicon-32.png?v=5'];
-const IMMUTABLE_ASSETS = new Set(["/assets/index-C6y__RP7.js","/assets/index-CK85o-ty.css"]);
+const CACHE = 'library-shell-react-ac47b259f9a3';
+const ASSETS = ['/', ...["/assets/index--Kvb1aGt.js","/assets/index-CK85o-ty.css"], '/assets/icon.svg?v=5', '/assets/manifest.webmanifest', '/assets/apple-touch-icon.png?v=5', '/assets/icon-192.png?v=5', '/assets/icon-512.png?v=5', '/assets/favicon-32.png?v=5'];
+const IMMUTABLE_ASSETS = new Set(["/assets/index--Kvb1aGt.js","/assets/index-CK85o-ty.css"]);
 const notificationTab = value => {
   try {
     const url = new URL(value || '/', self.location.origin);

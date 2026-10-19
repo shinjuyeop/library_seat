@@ -13,7 +13,8 @@ from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
-from seat_service import DemoClient, LibraryError, SeatService, SettingsStore
+from seat_service import (DemoClient, LibraryError, SeatService, SettingsStore, ROOMS,
+                          LIBRARY_PAUSED_MESSAGE, library_access_paused)
 from library_login import LoginError
 import push_notifications as push
 
@@ -65,6 +66,8 @@ def create_app(service, password=None, *, secret=None, secure_cookie=True):
             expected = os.getenv('CRON_SECRET', '')
             if len(expected) < 32 or not secrets.compare_digest(request.headers.get('Authorization', ''), 'Bearer ' + expected):
                 return jsonify(error='Unauthorized'), 401
+            if library_access_paused():
+                return jsonify(ok=True, skipped='library_access_paused')
             return None
         if request.method != 'GET':
             expected = session.get('csrf')
@@ -75,6 +78,8 @@ def create_app(service, password=None, *, secret=None, secure_cookie=True):
                 return jsonify(error='JSON 요청이 필요합니다.'), 415
         if request.path not in ('/api/session', '/api/login', '/api/library-login') and not authorized():
             return jsonify(error='웹앱에 먼저 로그인해 주세요.'), 401
+        if library_access_paused() and request.path not in ('/api/session', '/api/state', '/api/logout'):
+            return jsonify(error=LIBRARY_PAUSED_MESSAGE, kind='paused'), 503
         return None
 
     @app.after_request
@@ -96,6 +101,8 @@ def create_app(service, password=None, *, secret=None, secure_cookie=True):
 
     @app.errorhandler(LibraryError)
     def library_error(error):
+        if error.blocked:
+            return jsonify(error=str(error), kind=error.kind or 'blocked', retryAt=error.retry_at), 503
         if isinstance(error, LoginError):
             return jsonify(error=str(error), kind=error.kind), 422 if error.kind == 'credentials' else 503 if error.kind == 'unavailable' else 409
         return jsonify(error=str(error)), 409
@@ -120,7 +127,8 @@ def create_app(service, password=None, *, secret=None, secure_cookie=True):
         if 'csrf' not in session:
             session['csrf'] = secrets.token_urlsafe(32)
         return jsonify(authorized=authorized(), csrf=session['csrf'], demo=service.demo,
-                       directLogin=bool(getattr(service, 'cloud', False)))
+                       directLogin=bool(getattr(service, 'cloud', False)),
+                       libraryAccessPaused=library_access_paused())
 
     @app.post('/api/library-login')
     def library_login():
@@ -170,7 +178,10 @@ def create_app(service, password=None, *, secret=None, secure_cookie=True):
 
     @app.get('/api/state')
     def state():
-        return jsonify(account_service().snapshot())
+        state = account_service().snapshot()
+        if library_access_paused():
+            state.update(error=LIBRARY_PAUSED_MESSAGE, reservationFresh=False, libraryAccessPaused=True)
+        return jsonify(state)
 
     @app.post('/api/connect')
     def connect():
@@ -316,11 +327,16 @@ def create_app(service, password=None, *, secret=None, secure_cookie=True):
 
     @app.post('/api/refresh')
     def refresh():
-        if throttle('refresh', 1, 1):
-            return jsonify(error='새로고침은 1초마다 가능합니다.'), 429
+        if throttle('refresh', 1, 30):
+            return jsonify(error='새로고침은 30초마다 가능합니다.'), 429
+        body = request.get_json()
+        room = body.get('room') if isinstance(body, dict) else None
+        if room is not None and (type(room) is not int or room not in ROOMS):
+            return jsonify(error='열람실을 확인해 주세요.'), 400
         if getattr(service, 'cloud', False):
-            account_service().refresh()
+            account_service().refresh(room)
         else:
+            service.refresh_requested.set()
             service.wake.set()
         return jsonify(ok=True)
 

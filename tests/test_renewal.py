@@ -578,7 +578,7 @@ class RenewalCloudTests(unittest.TestCase):
         self.assertEqual(alice.snapshot()['reservation']['renewableCnt'], 2)
         self.assertEqual(alice.store.read()['nextPollAt'], NOON + 1)  # Deliver the queued renewal result first.
         alice.tick()
-        self.assertEqual(alice.store.read()['nextPollAt'], NOON + 30)
+        self.assertEqual(alice.store.read()['nextPollAt'], alice.snapshot()['autoRenew']['dueAt'])
         self.assertNotIn(TAG, json.dumps(alice.store.read()))
 
     def test_default_and_opt_out_persist_across_devices_and_login(self):

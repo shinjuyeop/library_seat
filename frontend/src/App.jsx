@@ -190,7 +190,8 @@ export default function App() {
             <div className="page-heading">
               <h1 ref={pageHeading} tabIndex={-1}>{titles[tab]}</h1>
               {tab !== 'settings' && <button id="refresh" className="refresh-button" disabled={!canAct}
-                onClick={() => mutate('refresh', {}, { message: '좌석 현황을 확인하고 있습니다.' })}><Icon name="refresh" /><span>{busy ? '확인 중…' : '새로고침'}</span></button>}
+                onClick={() => mutate('refresh', tab === 'find' && filters.room !== 'all' ? { room: Number(filters.room) } : {},
+                  { message: '좌석 현황을 확인하고 있습니다.' })}><Icon name="refresh" /><span>{busy ? '확인 중…' : '새로고침'}</span></button>}
             </div>
             {!reachable && <p id="offline" className="notice warning" role="status">연결 끊김 · 마지막으로 확인한 정보를 표시합니다.</p>}
             {data.error && <p id="service-error" className="notice warning" role="status">{data.error}</p>}

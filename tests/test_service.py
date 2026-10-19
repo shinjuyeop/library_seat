@@ -79,9 +79,9 @@ class WorkerTests(ServiceFixture):
             self.service.set_wait(['232:99999'], True)
         self.assertFalse(self.service.snapshot()['running'])
 
-    def test_fast_polling_exact_boundary_and_unknown_remaining_time(self):
+    def test_wait_polling_never_accelerates_for_urgent_or_unknown_remaining_time(self):
         self.service.set_wait(['232:1'], True)
-        for remaining, expected in [(0,1), (0.5,1), (1,1), ('1',1), (1.01,30), (2,30),
+        for remaining, expected in [(0,30), (0.5,30), (1,30), ('1',30), (1.01,30), (2,30),
                                     (-1,30), (None,30), ('',30), (' ',30), ('bad',30), (True,30), (float('nan'),30)]:
             with self.subTest(remaining=remaining):
                 self.client.seats = Mock(return_value=[{'id':232001,'code':'1','isOccupied':True,'remainingTime':remaining}])
@@ -94,7 +94,7 @@ class WorkerTests(ServiceFixture):
         self.service.tick(targets_only=True)
         self.assertEqual(self.service.snapshot()['interval'], 30)
 
-    def test_fast_polling_only_selected_rooms_preserves_other_room_cache(self):
+    def test_wait_polling_only_selected_rooms_preserves_other_room_cache(self):
         self.service.tick()
         other = next(s for s in self.service.snapshot()['seats'] if s['key'] == '107:1')
         self.service.set_wait(['232:1'], True)
@@ -102,7 +102,7 @@ class WorkerTests(ServiceFixture):
         self.service.tick(targets_only=True)
         self.client.seats.assert_called_once_with(232)
         self.assertEqual(next(s for s in self.service.snapshot()['seats'] if s['key'] == '107:1'), other)
-        self.assertEqual(self.service.snapshot()['interval'], 1)
+        self.assertEqual(self.service.snapshot()['interval'], 30)
         self.service.set_wait(['232:1'], False)
         self.assertEqual(self.service.snapshot()['interval'], 30)
 
@@ -521,6 +521,12 @@ class FakeCloudStore:
     def for_account(self, account):
         return FakeCloudStore(self.accounts, account, self.locks, self.devices)
 
+    def access_status(self):
+        return copy.deepcopy(self.locks.get('accessControl', {}))
+
+    def stop_access(self, reason, retry_at=None):
+        self.locks.setdefault('accessControl', {'blocked': True, 'reason': reason, 'retryAt': retry_at})
+
     def push_devices(self):
         return [copy.deepcopy(device) for device in self.devices.values() if device['account'] == self.account]
 
@@ -788,6 +794,7 @@ class CloudTests(unittest.TestCase):
             self.assertIsNone(persisted['repeat'])
             self.assertIsNone(bob.snapshot()['reservation'])
             client.reserve = Mock(wraps=reserve)
+            self.store.accounts[alice.store.account]['state']['nextCheck'] = 0
             alice.tick()
             persisted = CloudService(alice.store, self.key).snapshot()
             self.assertFalse(persisted['running'])
@@ -821,18 +828,18 @@ class CloudTests(unittest.TestCase):
         self.assertIsNone(cloud.snapshot()['repeat'])
         self.assertAlmostEqual(cloud.snapshot()['reservation']['startedAt'], time.time(), delta=2)
 
-    def test_cloud_dispatch_deadline_tracks_fast_wait_stop_and_idle(self):
+    def test_cloud_dispatch_deadline_tracks_wait_and_sleeps_when_idle(self):
         cloud = self.login()
-        self.assertGreaterEqual(cloud.store.read()['nextPollAt'], time.time() + 290)
+        self.assertIsNone(cloud.store.read()['nextPollAt'])
         cloud.set_wait(['232:1'], True)
         self.assertLess(cloud.store.read()['nextPollAt'], time.time() + 2)
         self.clients['alice'].seats = Mock(return_value=[{'id':232001,'code':'1','isOccupied':True,'remainingTime':1}])
         started = time.time()
         cloud.tick()
-        self.assertEqual(cloud.snapshot()['interval'], 1)
-        self.assertAlmostEqual(cloud.store.read()['nextPollAt'], started + 1, delta=.2)
+        self.assertEqual(cloud.snapshot()['interval'], 30)
+        self.assertAlmostEqual(cloud.store.read()['nextPollAt'], started + 30, delta=.2)
         cloud.set_wait(['232:1'], False)
-        self.assertGreater(cloud.store.read()['nextPollAt'], time.time() + 290)
+        self.assertIsNone(cloud.store.read()['nextPollAt'])
 
     def test_invalid_login_does_not_register_account(self):
         from library_login import LoginError
@@ -998,7 +1005,8 @@ class ProviderLoginTests(unittest.TestCase):
             session.post.return_value = response
             with self.assertRaises(LoginError) as error:
                 login_to_library('alice', 'password')
-            self.assertEqual(error.exception.kind, 'unavailable')
+            self.assertEqual(error.exception.kind, 'unexpected_response')
+            self.assertTrue(error.exception.blocked)
             session.post.side_effect = requests.Timeout()
             with self.assertRaises(LoginError) as error:
                 login_to_library('alice', 'password')

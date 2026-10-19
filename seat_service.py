@@ -17,6 +17,8 @@ from pathlib import Path
 import requests
 
 from library_config import SINGLE_SEATS
+from library_access import (RETRY_DELAYS, WAIT_SECONDS, WAIT_CHECKS, check_shared_access,
+                            record_access_failure, response_error, invalid_response, work_due)
 
 BASE = 'https://library.konkuk.ac.kr'
 ROOMS = {102: '1열람실 A', 101: '1열람실 B', 232: '2열람실',
@@ -124,12 +126,30 @@ def sanitize_seat_catalog(state):
 
 
 class LibraryError(Exception):
-    def __init__(self, message, *, expired=False, uncertain=False, operating_hours=False, rejected=False):
+    def __init__(self, message, *, expired=False, uncertain=False, operating_hours=False, rejected=False,
+                 blocked=False, retryable=False, retry_at=None, kind=None):
         super().__init__(message)
         self.expired = expired
         self.uncertain = uncertain
         self.operating_hours = operating_hours
         self.rejected = rejected
+        self.blocked = blocked
+        self.retryable = retryable
+        self.retry_at = retry_at
+        self.kind = kind
+
+
+LIBRARY_PAUSED_MESSAGE = '도서관 연결을 일시 중지했습니다. 로그인·조회·예약·자동 연장을 사용할 수 없습니다.'
+
+
+def library_access_paused():
+    return os.getenv('LIBRARY_ACCESS_PAUSED', '').strip().lower() in {'1', 'true', 'yes', 'on'}
+
+
+def require_library_access():
+    if library_access_paused():
+        raise LibraryError(LIBRARY_PAUSED_MESSAGE)
+    check_shared_access()
 
 
 def normalize_reservation(data):
@@ -196,19 +216,26 @@ class LibraryClient:
         self.session.close()
 
     def _request(self, method, path, **kwargs):
+        require_library_access()
         try:
             response = self.session.request(method, BASE + '/pyxis-api/1/api/' + path,
                                             timeout=(5, 10), allow_redirects=False, **kwargs)
         except requests.RequestException:
-            raise LibraryError('도서관 서버에 연결하지 못했습니다.', uncertain=method != 'GET') from None
-        if response.status_code in (301, 302, 303, 307, 308, 401, 403):
-            raise LibraryError('도서관 로그인이 만료되었거나 접근이 거부되었습니다. 다시 연결해 주세요.', expired=True)
+            raise LibraryError('도서관 서버에 연결하지 못했습니다.', uncertain=method != 'GET', retryable=True) from None
+        classified = response_error(response, write=method != 'GET')
+        if classified:
+            raise classified
         try:
             body = response.json()
         except ValueError:
-            raise LibraryError('도서관에서 정상적인 응답을 받지 못했습니다.', uncertain=method != 'GET') from None
+            raise invalid_response(write=method != 'GET') from None
         if not isinstance(body, dict):
-            raise LibraryError('도서관 응답 형식을 확인할 수 없습니다.', uncertain=method != 'GET')
+            raise invalid_response(write=method != 'GET')
+        if response.status_code == 401:
+            code = str(body.get('code') or body.get('error') or '').upper()
+            if any(word in code for word in ('AUTH', 'TOKEN', 'LOGIN', 'SESSION')):
+                raise LibraryError('도서관 로그인이 만료되었습니다. 다시 연결해 주세요.', expired=True)
+            raise invalid_response(write=method != 'GET')
         if response.status_code != 200 or body.get('success') is not True:
             code = str(body.get('code', response.status_code))
             expired = any(word in code.upper() for word in ('AUTH', 'TOKEN', 'LOGIN', 'SESSION'))
@@ -283,7 +310,7 @@ class SettingsStore:
 class SeatService:
     def __init__(self, store, *, interval=30, client=None, demo=False, nfc_tags=None):
         self.store = store
-        self.interval = max(10, interval)
+        self.interval = max(30, interval)
         self.client = client
         self.demo = demo
         self.nfc_tags = (nfc_tags if nfc_tags is not None else
@@ -291,6 +318,7 @@ class SeatService:
         self.operation = threading.RLock()
         self.lock = threading.RLock()
         self.wake = threading.Event()
+        self.refresh_requested = threading.Event()
         self.stopping = threading.Event()
         self.thread = None
         self.login_thread = None
@@ -309,6 +337,7 @@ class SeatService:
             'autoRenew': saved.get('autoRenew'), 'renewNightUntil': saved.get('renewNightUntil'),
             'autoRenewDisabledId': saved.get('autoRenewDisabledId'),
             'scheduledBooking': saved.get('scheduledBooking'), 'notifications': saved.get('notifications', []),
+            'connectionRetry': saved.get('connectionRetry'), 'waitControl': saved.get('waitControl'),
             'lastChecked': None, 'nextCheck': None, 'error': None,
             'message': '도서관 계정을 연결해 주세요.' if not client else '좌석 현황을 확인하고 있습니다.',
             'events': [], 'demo': demo, 'interval': self.interval,
@@ -367,15 +396,33 @@ class SeatService:
             self.store.save(self.state['targets'], self.state['running'], self.state['repeat'],
                             self.state['repeatControl'], self.state['autoRenew'], self.state['renewNightUntil'],
                             {'scheduledBooking': self.state['scheduledBooking'], 'notifications': self.state['notifications'],
-                             'autoRenewDisabledId': self.state['autoRenewDisabledId'], 'favorites': self.state['favorites']})
+                             'autoRenewDisabledId': self.state['autoRenewDisabledId'], 'favorites': self.state['favorites'],
+                             'connectionRetry': self.state['connectionRetry'], 'waitControl': self.state['waitControl']})
 
     def _failure(self, error):
+        if error.kind == 'cooldown':
+            return
+        record_access_failure(error)
+        if error.blocked or (error.retryable and error.uncertain):
+            self._update(connectionRetry={'status': 'paused', 'attempts': 0, 'retryAt': error.retry_at,
+                                          'reason': error.kind or 'uncertain'}, running=False)
+            plan = self.snapshot()['autoRenew']
+            if plan:
+                self._update(autoRenew={**plan, 'status': 'paused', 'message': str(error)})
+        elif error.retryable:
+            attempts = (self.snapshot().get('connectionRetry') or {}).get('attempts', 0) + 1
+            retry_at = max(time.time() + RETRY_DELAYS[attempts - 1], error.retry_at or 0) if attempts <= len(RETRY_DELAYS) else None
+            self._update(connectionRetry={'status': 'waiting' if retry_at else 'paused',
+                                          'attempts': attempts, 'retryAt': retry_at, 'reason': 'unavailable'})
+            if retry_at is None:
+                self._update(running=False)
         self._notify('failure', getattr(error, 'notification_title', '좌석 작업에 실패했습니다'), str(error))
         self._update(error=str(error), reservationFresh=False)
-        if error.expired:
+        if error.expired or error.blocked:
             self._disconnect_client()
             self._update(connected=False, nextCheck=None)
-            self._event('도서관 연결이 만료되어 대기를 일시 중지했습니다. 다시 로그인해 주세요.')
+            self._event('도서관 접속 제한으로 자동 연결을 중지했습니다.' if error.blocked else
+                        '도서관 연결이 만료되어 대기를 일시 중지했습니다. 다시 로그인해 주세요.')
         if error.uncertain:
             self._update(running=False, repeat=None, repeatControl={'observedId': None, 'paused': True})
             self._save()
@@ -407,8 +454,9 @@ class SeatService:
             with self.operation:
                 self._disconnect_client()
                 self.client, client = client, None
-                self._update(connected=True, reservation=reservation, reservationFresh=True, error=None)
+                self._update(connected=True, reservation=reservation, reservationFresh=True, error=None, connectionRetry=None)
                 self._event('도서관 계정을 연결했습니다.')
+                self.refresh_requested.set()
                 self.wake.set()
         except LibraryError as error:
             self._update(error=str(error))
@@ -479,6 +527,8 @@ class SeatService:
                     raise LibraryError('좌석 목록이 변경되었습니다. 새로고침 후 다시 선택해 주세요.')
                 self._merge_seats(available)
             self._update(targets=list(dict.fromkeys(targets)), running=running, error=None)
+            if running and (not was_running or not self.snapshot()['waitControl']):
+                self._update(waitControl={'deadlineAt': time.time() + WAIT_SECONDS, 'checks': 0})
             self._update(interval=self.poll_interval(), nextCheck=time.time())
             self._save()
             self._event('대기 좌석을 변경했습니다.' if running and was_running else
@@ -536,27 +586,28 @@ class SeatService:
         self._update(seats=sorted(others + seats, key=lambda item: (order[item['roomId']], int(item['number']))))
 
     def poll_interval(self):
-        state = self.snapshot()
-        if not state['running'] or state['error']:
-            return self.interval
-        for seat in state['seats']:
-            if seat['key'] not in state['targets']:
-                continue
-            if seat['occupied'] is False:
-                return 1
-            remaining = seat.get('remainingTime')
-            if remaining is None or isinstance(remaining, bool) or (isinstance(remaining, str) and not remaining.strip()):
-                continue
-            try:
-                minutes = float(remaining)
-            except (TypeError, ValueError):
-                continue
-            if seat['occupied'] is True and math.isfinite(minutes) and 0 <= minutes <= 1:
-                return 1
         return self.interval
 
-    def tick(self, *, targets_only=False, allow_actions=True, reservation_only=False):
+    def _check_wait_budget(self):
+        state = self.snapshot()
+        if not state['running']:
+            return True
+        control = state.get('waitControl') or {'deadlineAt': time.time() + WAIT_SECONDS, 'checks': 0}
+        if time.time() >= control['deadlineAt'] or control['checks'] >= WAIT_CHECKS:
+            self._update(running=False, waitControl=control)
+            self._event('대기 실행 한도에 도달해 자동 조회를 중지했습니다. 필요하면 다시 시작해 주세요.')
+        else:
+            self._update(waitControl={**control, 'checks': control['checks'] + 1})
+        self._save()
+        return self.snapshot()['running']
+
+    def tick(self, *, targets_only=False, allow_actions=True, reservation_only=False, rooms=None):
         with self.operation:
+            previous_retry = self.snapshot().get('connectionRetry')
+            if allow_actions and not self._check_wait_budget():
+                other_due = work_due(self.snapshot())
+                if other_due is None or other_due > time.time():
+                    return
             if allow_actions and self._check_scheduled():
                 return
             if not self.client:
@@ -569,15 +620,19 @@ class SeatService:
                 self._default_auto_renew(reservation)
                 self._check_auto_renew(reservation, allow_run=allow_actions)
                 current = self.snapshot()
-                if reservation_only and not current['running']:
-                    self._update(error=None)
+                if (current.get('connectionRetry') and current['connectionRetry'] != previous_retry) or not self.client:
                     return
-                room_ids = {int(key.split(':')[0]) for key in current['targets']} if targets_only and current['running'] else set(ROOMS)
+                if reservation_only and not current['running']:
+                    self._update(error=None, connectionRetry=None)
+                    return
+                room_ids = set(rooms) if rooms is not None else ({int(key.split(':')[0]) for key in current['targets']} if targets_only and current['running'] else set(ROOMS))
                 seats = self._read_seats(room_ids)
                 self._merge_seats(seats, room_ids)
                 if room_ids == set(ROOMS):
                     self._update(catalogVersion=1)
-                self._update(lastChecked=time.time(), error=None)
+                self._update(error=None, connectionRetry=None)
+                if room_ids == set(ROOMS):
+                    self._update(lastChecked=time.time())
                 state = self.snapshot()
                 if allow_actions and state['running']:
                     for key in state['targets']:
@@ -1328,17 +1383,26 @@ class SeatService:
         self.thread.start()
 
     def _run(self):
+        if self.demo:
+            self.refresh_requested.set()
         while not self.stopping.is_set():
             self.wake.clear()
             try:
-                self.tick()
+                manual = self.refresh_requested.is_set()
+                self.refresh_requested.clear()
+                due = work_due(self.snapshot())
+                if manual or (due is not None and due <= time.time()):
+                    state = self.snapshot()
+                    self.tick(allow_actions=not manual, targets_only=bool(state['running']),
+                              reservation_only=bool(not manual and state['autoRenew'] and not state['running']))
             except Exception:
                 # Never silently lose the background worker or auto-retry an unknown write outcome.
                 with self.operation:
                     self._update(error='서버 처리 중 오류가 발생해 자동 예약을 중지했습니다.', running=False, repeat=None,
                                  repeatControl={'observedId': None, 'paused': True})
                     self._save()
-            self.wake.wait(max(0, (self.snapshot()['nextCheck'] or time.time() + self.interval) - time.time()))
+            due = work_due(self.snapshot())
+            self.wake.wait(max(1, due - time.time()) if due is not None else 300)
 
     def stop(self):
         self.stopping.set()

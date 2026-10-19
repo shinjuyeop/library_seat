@@ -1,19 +1,20 @@
 """Password login through the same endpoint used by the official library website."""
 import requests
 
-from seat_service import BASE, LibraryError
+from seat_service import BASE, LibraryError, require_library_access
+from library_access import response_error, invalid_response
 
 
 class LoginError(LibraryError):
-    def __init__(self, message, *, kind='credentials'):
-        super().__init__(message)
-        self.kind = kind
+    def __init__(self, message, *, kind='credentials', **kwargs):
+        super().__init__(message, kind=kind, **kwargs)
 
 
 INVALID_LOGIN = '아이디 또는 비밀번호가 올바르지 않습니다. 비밀번호를 다시 입력해 주세요.'
 
 
 def login_to_library(username, password):
+    require_library_access()
     # Official main.02eeab51992c2936.js AuthService.login$ (2026-10-07).
     # No SSO, privacy consent, password change, or second-factor checks are bypassed.
     with requests.Session() as session:
@@ -25,17 +26,19 @@ def login_to_library(username, password):
                                           'isFamilyLogin': False, 'isMobile': False},
                                     timeout=(5, 12), allow_redirects=False)
         except requests.RequestException:
-            raise LoginError('도서관 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.', kind='unavailable') from None
-        if response.status_code == 429:
-            raise LoginError('도서관 로그인 요청이 많습니다. 잠시 후 다시 시도해 주세요.', kind='unavailable')
-        if response.status_code >= 500 or response.is_redirect:
-            raise LoginError('도서관 로그인 서버를 이용할 수 없습니다. 잠시 후 다시 시도해 주세요.', kind='unavailable')
+            raise LoginError('도서관 서버에 연결하지 못했습니다. 잠시 후 다시 시도해 주세요.', kind='unavailable', retryable=True) from None
+        classified = response_error(response)
+        if classified:
+            raise LoginError(str(classified), kind=classified.kind or 'unavailable', blocked=classified.blocked,
+                             retryable=classified.retryable, retry_at=classified.retry_at)
         try:
             body = response.json()
         except ValueError:
-            raise LoginError('도서관이 서버 접속을 차단했거나 응답을 확인할 수 없습니다. 비밀번호는 저장하지 않았습니다.', kind='unavailable') from None
+            error = invalid_response()
+            raise LoginError(str(error), kind='unexpected_response', blocked=True) from None
         if not isinstance(body, dict):
-            raise LoginError('도서관 로그인 응답을 확인할 수 없습니다.', kind='unavailable')
+            error = invalid_response()
+            raise LoginError(str(error), kind='unexpected_response', blocked=True)
         code = str(body.get('code', ''))
         if 'secondary' in code.lower() or 'privacy' in code.lower() or 'expired' in code.lower() or 'locked' in code.lower():
             raise LoginError('공식 도서관 홈페이지에서 추가 인증 또는 계정 상태를 확인한 뒤 다시 로그인해 주세요.', kind='action_required')

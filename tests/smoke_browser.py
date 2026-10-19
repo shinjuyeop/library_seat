@@ -323,7 +323,8 @@ def main():
             with service.operation:
                 contention['occupied'] = False
             service.wake.set()
-            wait.until(lambda d: (current := service.snapshot()['reservation']) and current['id'] != reassigned['id'] and current['state'] == 'CHARGE')
+            # Waiting checks now honor a 30-second minimum even when explicitly woken.
+            WebDriverWait(driver, 45).until(lambda d: (current := service.snapshot()['reservation']) and current['id'] != reassigned['id'] and current['state'] == 'CHARGE')
             recovered = service.snapshot()
             assert recovered['reservation']['seatId'] == reassigned['seatId']
             assert recovered['running'] and not recovered['repeat']
@@ -336,7 +337,7 @@ def main():
             with service.operation:
                 contention['occupied'] = False
             service.wake.set()
-            wait.until(lambda d: (current := service.snapshot()['reservation']) and current['seatId'] == 102006 and current['state'] == 'CHARGE')
+            WebDriverWait(driver, 45).until(lambda d: (current := service.snapshot()['reservation']) and current['seatId'] == 102006 and current['state'] == 'CHARGE')
             wait.until(lambda d: '1열람실 A' in visible('#reservation-seat').text and '배정 확정 완료' in visible('#toast').text)
             assert not service.snapshot()['running'] and not service.snapshot()['repeat']
             no_overflow()

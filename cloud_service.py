@@ -12,7 +12,8 @@ import requests
 from cryptography.fernet import Fernet, InvalidToken
 
 from library_login import LoginError, login_to_library
-from seat_service import LibraryClient, LibraryError, SeatService, configured_nfc_tags, sanitize_seat_catalog, schedule_window, scheduled_check_at
+from seat_service import LibraryClient, LibraryError, SeatService, configured_nfc_tags, sanitize_seat_catalog, schedule_window, scheduled_check_at, require_library_access
+from library_access import guarded_access, bind_retry_state, record_access_failure, work_due
 import push_notifications as push
 
 
@@ -81,6 +82,15 @@ class SupabaseStore:
     def delete_push(self, identifier):
         self._request('POST', '/rpc/library_push_delete', json={'p_account': self._account(), 'p_id': identifier})
 
+    def access_status(self):
+        status = self._request('POST', '/rpc/library_access_status', json={})
+        if not isinstance(status, dict):
+            raise LibraryError('도서관 연결 중지 상태를 확인하지 못했습니다.')
+        return status
+
+    def stop_access(self, reason, retry_at=None):
+        self._request('POST', '/rpc/library_access_stop', json={'p_reason': reason, 'p_retry_at': retry_at})
+
 
 class CloudService:
     cloud = True
@@ -125,41 +135,37 @@ class CloudService:
         state['confirmationRooms'] = sorted(configured_nfc_tags())
         state['scheduleWindow'] = schedule_window()
         state.update(cloud=True, connected=bool(document.get('credential')), autoLogin=bool(document.get('login')), schedulerLastSeen=document.get('schedulerLastSeen'))
+        access = self.store.access_status()
+        state['accessControl'] = access
         heartbeat = document.get('schedulerLastSeen')
-        active_renewal = state.get('autoRenew') and state['autoRenew']['status'] in {'scheduled', 'retry', 'working'}
-        if (state['running'] or active_renewal) and (not heartbeat or time.time() - heartbeat > 120):
+        expected = work_due(state)
+        if expected is not None and time.time() - expected > 120 and (not heartbeat or time.time() - heartbeat > 120):
             state['error'] = '자동 실행 연결을 확인할 수 없습니다. 잠시 후 다시 확인해 주세요.'
             state['reservationFresh'] = False
+        if access.get('blocked'):
+            state.update(error='도서관 연결이 중지되어 있습니다. 접속 제한을 확인한 뒤 운영자가 재개해야 합니다.',
+                         connected=False, reservationFresh=False, running=False)
         return state
 
     @staticmethod
     def _schedule_document(document, worker):
         state = worker.snapshot()
         now = time.time()
-        if not worker.client:
-            due = max(now + 1, document.get('loginRetryAt', 0)) if document.get('login') else now + 300
-        elif state['running']:
-            due = max(now, state.get('nextCheck') or now)
-        elif state['autoRenew']:
-            plan = state['autoRenew']
-            if plan['status'] in {'paused', 'working'}:
-                due = now + 300
-            else:
-                due = max(now + 1, min(now + 30, max(plan['dueAt'], plan.get('retryAt') or 0, state['renewNightUntil'] or 0)))
-        elif state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE':
-            due = now + 30
-        else:
-            due = max(now + 1, (state['lastChecked'] or now) + 300)
+        due = work_due(state, now)
+        if due is not None:
+            due = max(now + 1, due)
+        if not worker.client and (not document.get('login') or document.get('autoLoginStopped')):
+            due = None
         job = state.get('scheduledBooking')
-        if job and job['status'] in {'pending', 'working'}:
-            due = min(due, max(now + 1, scheduled_check_at(job)))
         if any(item['delivery'] == 'pending' for item in state.get('notifications', [])):
-            due = min(due, now + 1)
+            due = min(due, now + 1) if due is not None else now + 1
         document['nextPollAt'] = due
         document['pendingWork'] = bool((job and job['status'] in {'pending', 'working'}) or
                                      any(item['delivery'] == 'pending' for item in state.get('notifications', [])))
 
+    @guarded_access
     def login(self, username, password, *, remember=False):
+        require_library_access()
         credentials = login_to_library(username, password)
         # No account row or saved password is created before the provider validates login.
         client = LibraryClient(credentials['token'], credentials['cookies'])
@@ -173,6 +179,7 @@ class CloudService:
         scoped._execute(None, credentials=credentials, reservation=reservation, saved_login={'username': username, 'password': password} if remember else None)
         return account
 
+    @guarded_access
     def _execute(self, action, *, credentials=None, reservation=None, saved_login=None, cron=False, discard_credentials=False):
         owner = str(uuid.uuid4())
         document = self.store.acquire(owner, include_catalog=not cron)
@@ -209,6 +216,7 @@ class CloudService:
                     persist()
             worker = SeatService(RuntimeStore(), client=client)
             worker.state.update(state)
+            bind_retry_state(worker.state)
             worker._update(connected=client is not None, connecting=False)
             saved_catalog = worker.snapshot()['seats']
             if cron:
@@ -222,7 +230,9 @@ class CloudService:
                     else:
                         document.pop('login', None)
                     document.pop('loginRetryAt', None)
-                    worker._update(connected=True, running=False, error=None, reservation=worker._with_booking_time(reservation), reservationFresh=True)
+                    document.pop('autoLoginStopped', None)
+                    worker._update(connected=True, running=False, error=None, connectionRetry=None,
+                                   reservation=worker._with_booking_time(reservation), reservationFresh=True)
                     worker._event('로그인했습니다.')
                     worker.tick(allow_actions=False)  # Login never reserves, renews, or switches seats.
                     worker._update(running=bool(state['running'] and worker.client))
@@ -236,7 +246,8 @@ class CloudService:
                 elif cron and self._deliver_push(worker):
                     pass  # Delivery has its own invocation budget; never delays a seat transaction.
                 elif cron and not worker.client and document.get('login'):
-                    if time.time() >= document.get('loginRetryAt', 0):
+                    due = work_due(worker.snapshot())
+                    if due is not None and due <= time.time() and not document.get('autoLoginStopped'):
                         self._auto_login(worker, document)
                     if not worker.client:
                         worker._check_scheduled()
@@ -259,7 +270,9 @@ class CloudService:
 
     def _auto_login(self, worker, document):
         new_client = None
-        document['loginRetryAt'] = time.time() + 300
+        # One attempt per expired connection; a crash also leaves retries stopped.
+        document['autoLoginStopped'] = True
+        document.pop('loginRetryAt', None)
         worker._save()
         try:
             saved = self._decrypt(document['login'])
@@ -271,14 +284,18 @@ class CloudService:
             worker.client, new_client = new_client, None
             document['credential'] = self._encrypt({'token': credentials['token'], 'cookies': credentials['cookies']})
             document.pop('loginRetryAt', None)
-            worker._update(connected=True, error=None, reservation=worker._with_booking_time(reservation), reservationFresh=True)
+            document.pop('autoLoginStopped', None)
+            worker._update(connected=True, error=None, connectionRetry=None,
+                           reservation=worker._with_booking_time(reservation), reservationFresh=True)
             worker._event('자동로그인했습니다.')
         except LibraryError as error:
+            record_access_failure(error)
             worker._update(error=str(error), connected=False, reservationFresh=False)
-            if not isinstance(error, LoginError) or error.kind != 'unavailable':
+            worker._update(running=False, connectionRetry={'status': 'paused', 'attempts': 1,
+                           'retryAt': error.retry_at, 'reason': error.kind or 'login_failed'})
+            if isinstance(error, LoginError) and error.kind in {'credentials', 'action_required'}:
                 document.pop('login', None)
-                worker._update(running=False, repeat=None)
-                worker._event('자동로그인에 실패했습니다. 비밀번호를 다시 입력해 주세요.')
+            worker._event('자동로그인에 실패해 자동 접속을 중지했습니다. 연결 상태를 직접 확인해 주세요.')
         finally:
             if new_client:
                 new_client.close()
@@ -351,14 +368,8 @@ class CloudService:
 
     def _deliver_push(self, worker):
         state = worker.snapshot()
-        job = state.get('scheduledBooking')
-        if job and job['status'] in {'pending', 'working'} and scheduled_check_at(job) <= time.time() + 20:
-            return False
-        if state['running'] and state['interval'] == 1:
-            return False
-        if (state['autoRenew'] and
-                state['autoRenew']['status'] in {'scheduled', 'retry'} and
-                max(state['autoRenew']['dueAt'], state['autoRenew'].get('retryAt') or 0, state['renewNightUntil'] or 0) <= time.time() + 20):
+        due = work_due(state)
+        if due is not None and due <= time.time() + 20:
             return False
         pending = [item for item in state.get('notifications', []) if item['delivery'] == 'pending']
         if not pending:
@@ -385,17 +396,16 @@ class CloudService:
         mark('failed' if failed else 'sent' if sent else 'skipped')
         return sent or failed
 
-    def refresh(self):
-        self._execute(lambda worker: worker.tick())
+    def refresh(self, room=None):
+        self._execute(lambda worker: worker.tick(allow_actions=False, rooms={room} if room is not None else None))
 
     def tick(self):
         def poll(worker):
             state = worker.snapshot()
-            complete_catalog = state.get('catalogVersion') == 1
-            recent_catalog = complete_catalog and time.time() - (state['lastChecked'] or 0) < 300
-            if not recent_catalog or state['running'] or state['autoRenew'] or state.get('scheduledBooking') or (state['reservation'] and state['reservation']['state'] == 'TEMP_CHARGE'):
-                worker.tick(targets_only=bool(state['running'] and complete_catalog),
-                            reservation_only=bool(state['autoRenew'] and not state['running'] and recent_catalog))
+            due = work_due(state)
+            if due is not None and due <= time.time():
+                worker.tick(targets_only=bool(state['running']),
+                            reservation_only=bool(state['autoRenew'] and not state['running']))
         self._execute(poll, cron=True)
 
 
