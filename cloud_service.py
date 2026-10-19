@@ -49,16 +49,22 @@ class SupabaseStore:
         self._request('POST', '/rpc/library_account_ensure', json={'p_account': self._account()})
 
     def read(self):
-        rows = self._request('GET', '/library_accounts', params={'account_key': 'eq.' + self._account(), 'select': 'document'})
-        if not rows:
+        document = self._request('POST', '/rpc/library_account_read', json={'p_account': self._account()})
+        if document is None:
             raise LibraryError('저장된 계정이 없습니다. 다시 로그인해 주세요.')
-        return rows[0]['document']
+        return document
+
+    def acquire(self, owner, *, include_catalog=True):
+        return self._request('POST', '/rpc/library_account_acquire', json={
+            'p_account': self._account(), 'p_owner': owner, 'p_catalog': include_catalog})
 
     def claim(self, owner):
         return self._request('POST', '/rpc/library_account_claim', json={'p_account': self._account(), 'p_owner': owner})
 
-    def save(self, owner, document):
-        if not self._request('POST', '/rpc/library_account_save', json={'p_account': self._account(), 'p_owner': owner, 'p_document': document}):
+    def save(self, owner, document, *, catalog=None, release=False):
+        if not self._request('POST', '/rpc/library_account_commit', json={
+                'p_account': self._account(), 'p_owner': owner, 'p_document': document,
+                'p_catalog': catalog, 'p_release': release}):
             raise LibraryError('다른 작업이 진행 중이거나 처리 시간이 초과되었습니다. 다시 확인해 주세요.')
 
     def release(self, owner):
@@ -169,11 +175,11 @@ class CloudService:
 
     def _execute(self, action, *, credentials=None, reservation=None, saved_login=None, cron=False, discard_credentials=False):
         owner = str(uuid.uuid4())
-        if not self.store.claim(owner):
+        document = self.store.acquire(owner, include_catalog=not cron)
+        if document is None:
             raise LibraryError('좌석을 확인 중입니다. 잠시 후 다시 시도해 주세요.')
-        worker = None
+        worker, released = None, False
         try:
-            document = self.store.read()
             state = self._empty_state()
             state.update(document.get('state', {}))
             sanitize_seat_catalog(state)
@@ -182,17 +188,29 @@ class CloudService:
                 credential = self._decrypt(document['credential'])
                 client = LibraryClient(credential['token'], credential['cookies'])
             store = self.store
+
+            def persist(*, final=False):
+                nonlocal saved_catalog, released
+                snapshot = worker.snapshot()
+                catalog = snapshot.pop('seats')
+                document['state'] = snapshot
+                CloudService._schedule_document(document, worker)
+                # Omitted catalogs stay untouched. Intermediate saves still hold
+                # the lease and durably disarm retries before any external write.
+                changed_catalog = catalog if catalog != saved_catalog else None
+                store.save(owner, document, catalog=changed_catalog, release=final)
+                saved_catalog = catalog
+                released = final
+
             class RuntimeStore:
                 def load(self):
                     return {'targets': state['targets'], 'running': state['running']}
                 def save(self, targets, running, repeat=None, repeat_control=None, auto_renew=None, renew_night_until=None, extras=None):
-                    document['state'] = worker.snapshot()
-                    CloudService._schedule_document(document, worker)
-                    # Disarm retries before an external reservation write.
-                    store.save(owner, document)
+                    persist()
             worker = SeatService(RuntimeStore(), client=client)
             worker.state.update(state)
             worker._update(connected=client is not None, connecting=False)
+            saved_catalog = worker.snapshot()['seats']
             if cron:
                 document['schedulerLastSeen'] = time.time()
             try:
@@ -228,13 +246,16 @@ class CloudService:
             finally:
                 if not worker.client:
                     document.pop('credential', None)
-                document['state'] = worker.snapshot()
-                self._schedule_document(document, worker)
-                store.save(owner, document)
+                persist(final=True)
         finally:
-            if worker and worker.client:
-                worker.client.close()
-            self.store.release(owner)
+            try:
+                if worker and worker.client:
+                    worker.client.close()
+            finally:
+                # A failed/ambiguous save is never retried. Release only our own
+                # lease; an already-committed final save makes this a no-op.
+                if not released:
+                    self.store.release(owner)
 
     def _auto_login(self, worker, document):
         new_client = None

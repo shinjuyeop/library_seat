@@ -122,6 +122,57 @@ Supabase SQL Editor에서 마이그레이션을 순서대로 적용합니다.
 4. `pg_cron`과 `pg_net` 확장 활성화
 5. Vault에 `library_app_url`(운영 주소)과 `library_cron_secret`(`CRON_SECRET`과 같은 값) 저장
 6. 새 앱 배포 후 `supabase/schedule.sql` 실행
+7. `supabase/cron_history_cleanup.sql` 실행 — 매일 한국 시간 03:00에 스케줄러 실행 기록과 사용 공간 정리
+
+### 스케줄러 실행 기록 자동 정리
+
+`library-seat-cron-history-cleanup` 작업은 매일 한국 시간 **03:00**에 `cron.job_run_details`를 비웁니다.
+운영 DB의 `cron.timezone`은 `GMT`이므로 일정은 `0 18 * * *`(UTC 18:00)입니다.
+`cron_history_cleanup.sql`은 같은 이름의 작업을 갱신하므로 다시 실행해도 중복 등록되지 않습니다.
+
+`TRUNCATE ONLY ... CONTINUE IDENTITY RESTRICT`로 실행 번호는 유지하면서 기록과 인덱스의 저장 공간을 즉시 회수합니다.
+성공·실패 기록을 모두 삭제하므로 각 기록은 다음 정리 시각까지, 최대 약 하루 동안만 남습니다.
+계정 문서에 저장된 좌석·예약·자동 연장 상태와 최근 활동 20건은 이 정리 대상에 포함되지 않습니다.
+로그 테이블 잠금 대기는 3초, 정리 명령 실행은 15초로 제한합니다. 잠금을 얻지 못하면 해당 정리는 실패하므로
+기록 테이블 용량을 확인하고 충돌 원인을 해결한 뒤 같은 정리 명령을 다시 실행합니다.
+정리 작업 자신의 시작 기록도 삭제되므로 정리 성공 여부는 테이블 크기와 다시 쌓이는 최신 실행 기록으로 확인합니다.
+
+다음 SQL로 일정과 저장 공간을 확인할 수 있습니다.
+
+```sql
+select jobname, schedule, active from cron.job
+where jobname = 'library-seat-cron-history-cleanup';
+select pg_size_pretty(pg_total_relation_size('cron.job_run_details')) as history_size,
+       pg_size_pretty(pg_database_size(current_database())) as database_size;
+```
+
+자동 정리를 끄려면 `select cron.unschedule('library-seat-cron-history-cleanup');`을 실행합니다.
+
+### 계정 상태와 좌석 목록 분리
+
+`compact_account_runtime` 마이그레이션은 `library_accounts.seat_catalog`에 좌석 목록을 별도로 저장하는 필드와
+서버 전용 RPC 세 개를 추가합니다. 기존 계정 RLS와 권한을 유지하며 새 RPC도 `service_role`만 실행합니다.
+
+- `library_account_read`: 화면과 직접 조작에 필요한 상태·좌석 목록을 한 번에 읽습니다.
+- `library_account_acquire`: 150초 실행 잠금을 얻으면서 상태를 읽습니다. 일반 cron 호출은 큰 좌석 목록을 제외하고,
+  활성 좌석 대기에서는 기존 목록을 함께 반환해 1초 확인과 열람실별 부분 갱신을 유지합니다.
+- `library_account_commit`: 작은 계정 상태를 저장하고 마지막 저장에서는 잠금도 함께 해제합니다.
+  좌석 목록은 변경된 경우에만 전송합니다. 목록 생략(`null`)과 명시적 초기화(`[]`)를 구분합니다.
+
+일반 cron 처리는 잠금·읽기·저장·해제의 네 요청 대신 두 요청을 사용합니다. 예약·반납·확정·연장·푸시를 보내기 전의
+중간 저장은 잠금을 유지한 채 계속 수행합니다. 만료됐거나 소유자가 바뀐 잠금으로는 상태와 목록을 저장할 수 없습니다.
+통신 실패 시 저장과 외부 쓰기를 자동 재전송하지 않습니다. 화면의 상태 응답과 조회 주기는 그대로 유지합니다.
+
+운영 적용 순서는 다음과 같습니다.
+
+1. `compact_account_runtime` 마이그레이션 적용. 이 단계에서는 기존 `document.state.seats`도 계속 읽고 보존합니다.
+2. `supabase/tests/compact_account_runtime.sql`로 잠금·계정 격리·목록 유지·접근 권한을 검증합니다. 가상 계정은 롤백됩니다.
+3. 새 앱을 운영에 배포하고 서버 호출 성공을 확인합니다.
+4. 이전 서버 실행이 끝나도록 운영 전환 후 **150초 이상** 기다립니다.
+5. `supabase/compact_account_catalogs.sql`로 목록을 별도 필드로 옮기고 계정 문서의 중복 목록을 제거합니다.
+
+이전 앱으로 되돌릴 때는 먼저 `supabase/restore_legacy_catalogs.sql`을 실행해 이전 읽기 형식을 복원한 뒤
+이전 배포로 전환합니다. 새 필드와 RPC를 삭제할 필요는 없습니다.
 
 DB 스케줄은 1초마다 실행 시각이 도래한 계정만 찾아 인증된 `/api/cron` 요청을 보냅니다.
 대기 중 선택 좌석이 **0~1분 남았거나 빈자리이면 1초**, 그 외에는 30초 주기를 목표로 합니다.

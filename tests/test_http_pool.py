@@ -12,13 +12,13 @@ class StoreConnectionTests(unittest.TestCase):
     @patch('cloud_service.requests.Session')
     def test_reuses_transport_across_account_wrappers_with_scoped_queries(self, session):
         response = session.return_value.request.return_value.__enter__.return_value
-        response.json.return_value = [{'document': {}}]
+        response.json.return_value = {}
         root = SupabaseStore('https://db.example', 'synthetic')
         root.for_account('a' * 64).read()
         root.for_account('b' * 64).read()
         session.assert_called_once()
         calls = session.return_value.request.call_args_list
-        self.assertEqual([call.kwargs['params']['account_key'] for call in calls], ['eq.' + 'a' * 64, 'eq.' + 'b' * 64])
+        self.assertEqual([call.kwargs['json']['p_account'] for call in calls], ['a' * 64, 'b' * 64])
         self.assertTrue(all(call.kwargs['timeout'] == 10 for call in calls))
 
     @patch('cloud_service.requests.Session')

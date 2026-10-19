@@ -539,16 +539,29 @@ class FakeCloudStore:
     def read(self):
         return copy.deepcopy(self.accounts[self.account])
 
+    def acquire(self, owner, *, include_catalog=True):
+        if not self.claim(owner):
+            return None
+        document = self.read()
+        if not include_catalog and not document.get('state', {}).get('running'):
+            document.get('state', {}).pop('seats', None)
+        return document
+
     def claim(self, owner):
         if self.locks.get(self.account):
             return False
         self.locks[self.account] = owner
         return True
 
-    def save(self, owner, document):
+    def save(self, owner, document, *, catalog=None, release=False):
         if self.locks.get(self.account) != owner:
             raise LibraryError('lease lost')
-        self.accounts[self.account] = copy.deepcopy(document)
+        document = copy.deepcopy(document)
+        document['state']['seats'] = copy.deepcopy(catalog if catalog is not None else
+            self.accounts[self.account].get('state', {}).get('seats', []))
+        self.accounts[self.account] = document
+        if release:
+            self.release(owner)
 
     def release(self, owner):
         if self.locks.get(self.account) == owner:
